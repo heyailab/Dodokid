@@ -15,7 +15,9 @@ info:
       access /admin/* endpoints and vice versa.
     - All /admin/* endpoints (except login) require adminBearerAuth + RBAC.
     - Admin endpoints never return child-identifiable information; stats are aggregated.
-    - Media upload: POST /admin/media issues temporary cloud-storage credentials
+    - Media upload: POST /admin/media issues a direct-upload target (local disk or
+      temporary cloud-storage credentials); with MEDIA_DRIVER=local the console then
+      PUTs the raw bytes to PUT /admin/media/blob
       scoped to a single object path; the admin frontend uploads the file directly
       to storage; the backend only persists media metadata (media_assets).
 
@@ -1735,6 +1737,49 @@ paths:
           $ref: '#/components/responses/Error'
         '401':
           $ref: '#/components/responses/Error'
+  /admin/media/blob:
+    put:
+      summary: Store media bytes on the server (local-disk storage driver)
+      description: >
+        Second half of the upload flow, used when MEDIA_DRIVER=local: the admin
+        console PUTs the raw file bytes to the uploadPath returned by
+        POST /admin/media. The metadata record already exists (created first,
+        AC-12); the server looks it up by cdnKey, verifies the declared MIME
+        type, writes the bytes under MEDIA_ROOT and updates the stored size.
+        Not available in object-storage mode, where the console uploads
+        straight to COS. Writes audit event admin.media.store.
+      operationId: adminStoreMediaBlob
+      tags: [AdminMedia]
+      security:
+        - adminBearerAuth: []
+      parameters:
+        - name: key
+          in: query
+          required: true
+          description: cdnKey returned by POST /admin/media
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        '200':
+          description: Bytes stored
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/MediaStoreResult' }
+        '400':
+          $ref: '#/components/responses/Error'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
   /admin/media/{id}:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
@@ -2336,15 +2381,39 @@ components:
             use it as cover/mediaRef on content items.
         cdnUrl: { type: string, description: Public CDN URL once upload completes }
         upload:
-          type: object
-          description: Temporary cloud-storage credentials scoped to cdnKey only
-          properties:
-            tmpSecretId: { type: string }
-            tmpSecretKey: { type: string }
-            sessionToken: { type: string }
-            storagePath: { type: string }
-            expiresInSec: { type: integer, example: 1800 }
-            maxFileSize: { type: integer, description: Server-enforced byte limit }
+          description: >
+            Direct-upload target. MEDIA_DRIVER=local (self-hosted default) returns a
+            PUT target on this API; MEDIA_DRIVER=cos returns temporary cloud-storage
+            credentials scoped to cdnKey.
+          oneOf:
+            - type: object
+              title: LocalDiskUploadTarget
+              properties:
+                driver: { type: string, enum: [local] }
+                method: { type: string, enum: [PUT] }
+                uploadPath: { type: string, description: Relative path to PUT the raw bytes to }
+                storagePath: { type: string }
+                maxFileSize: { type: integer, description: Server-enforced byte limit }
+                headers: { type: object, additionalProperties: { type: string } }
+            - type: object
+              title: CosUploadCredentials
+              properties:
+                driver: { type: string, enum: [cos] }
+                tmpSecretId: { type: string }
+                tmpSecretKey: { type: string }
+                sessionToken: { type: string }
+                storagePath: { type: string }
+                expiresInSec: { type: integer, example: 1800 }
+                maxFileSize: { type: integer, description: Server-enforced byte limit }
+    MediaStoreResult:
+      type: object
+      description: Result of storing media bytes on the server (local storage driver)
+      properties:
+        mediaId: { type: string }
+        cdnKey: { type: string }
+        url: { type: string, description: Public URL derived from MEDIA_CDN_BASE_URL }
+        size: { type: integer, description: Actual stored byte count }
+        contentType: { type: string }
     AuditEntry:
       type: object
       properties:
