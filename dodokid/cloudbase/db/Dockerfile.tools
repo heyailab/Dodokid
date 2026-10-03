@@ -1,0 +1,24 @@
+# 数据库工具镜像（初始化集合/索引 + 灌种子数据）
+#
+# 构建上下文是 cloudbase/ 目录（因为 db/ 的脚本要引用 ../functions/api/db/context.js）：
+#   docker build -f db/Dockerfile.tools -t dodokid-db-tools .
+FROM node:20-alpine
+
+WORKDIR /app
+
+# db 工具自身的依赖
+COPY db/package*.json ./db/
+RUN cd db && npm ci --omit=dev
+
+# functions/api 的依赖也要装：db 脚本会 require functions/api/db/context.js，
+# 而该文件要 require('mongodb')，按 Node 的解析规则会先找 functions/api/node_modules
+COPY functions/api/package*.json ./functions/api/
+RUN cd functions/api && npm ci --omit=dev
+
+COPY functions/api ./functions/api
+COPY db ./db
+
+WORKDIR /app/db
+
+# 默认执行索引初始化；灌数据用 `docker compose run --rm db-tools node seed-content.js`
+CMD ["node", "init-mongo.js"]
