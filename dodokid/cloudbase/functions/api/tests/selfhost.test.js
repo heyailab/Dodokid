@@ -15,15 +15,35 @@ process.env.PORT = '0'; // 让内核分配空闲端口，避免与本机真实�
 
 const path = require('path');
 
-// ---- 注入假库（在 require server 之前）----
+// ---- 注入假库 + 真实本地存储驱动（在 require server 之前）----
+const fs = require('fs');
+const os = require('os');
 const createFakeDb = require('./fake-db');
 const fakeDb = createFakeDb(require('./fixtures/admin-seed.json'));
+
+// 媒体用真实的 localMedia 驱动，指向临时目录 —— 这样 /media 分发与
+// 路径穿越防护能被真正执行到，而不是只测一个空壳 storage
+const mediaRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dodokid-media-'));
+const { createLocalMediaStorage } = require('../db/localMedia');
+const localStorage = createLocalMediaStorage({
+  mediaRoot,
+  mediaCdnBaseUrl: 'https://dodokid.test/media',
+  mediaMaxSizeMB: 1,
+  mediaAllowedMimeTypes: ['image/png'],
+});
+
 const appContextPath = require.resolve('../appContext');
 require.cache[appContextPath] = {
   id: appContextPath,
   filename: appContextPath,
   loaded: true,
-  exports: { app: {}, db: fakeDb, storage: {}, command: fakeDb.command, _: fakeDb.command },
+  exports: {
+    app: {},
+    db: fakeDb,
+    storage: localStorage,
+    command: fakeDb.command,
+    _: fakeDb.command,
+  },
 };
 
 const { toMongoFilter, toMongoUpdate, createCommand, createRegExp } = require('../db/mongo');
@@ -67,6 +87,59 @@ eq(
   { $set: { updatedAt: 'now' }, $inc: { count: 1 } }
 );
 eq('纯更新只有 $set', toMongoUpdate({ title: 't' }), { $set: { title: 't' } });
+
+// ============ A2. 本地磁盘媒体驱动 ============
+(async () => {
+  eq('本地媒体：公开地址按 MEDIA_CDN_BASE_URL 拼接',
+    (await localStorage.getTempFileURL({ fileList: ['admin-media/covers/a.png'] })).fileList[0].tempFileURL,
+    'https://dodokid.test/media/admin-media/covers/a.png');
+
+  const put = await localStorage.putObject('admin-media/covers/x.png', Buffer.from('PNG-DATA'), 'image/png');
+  check('本地媒体：写入返回字节数与类型', put.size === 8 && put.contentType === 'image/png', put);
+  check('本地媒体：文件确实落盘',
+    fs.existsSync(path.join(mediaRoot, 'admin-media/covers/x.png')));
+  check('本地媒体：没有残留 .part 临时文件',
+    fs.readdirSync(path.join(mediaRoot, 'admin-media/covers')).every((f) => !f.endsWith('.part')));
+
+  const st = await localStorage.statObject('admin-media/covers/x.png');
+  check('本地媒体：stat 返回大小', st && st.size === 8, st);
+
+  // 路径穿越必须被挡住（../.. 能读到系统文件就是严重漏洞）
+  let traversalBlocked = false;
+  try {
+    localStorage.resolvePath('../../etc/passwd');
+  } catch (e) {
+    traversalBlocked = true;
+  }
+  check('本地媒体：拒绝 ../ 路径穿越', traversalBlocked);
+  let prefixBlocked = false;
+  try {
+    localStorage.resolvePath('../media-evil/x.png');
+  } catch (e) {
+    prefixBlocked = true;
+  }
+  check('本地媒体：拒绝同前缀绕过（../media-evil）', prefixBlocked);
+
+  let rejected = null;
+  try {
+    await localStorage.putObject('admin-media/covers/big.png', Buffer.alloc(2 * 1024 * 1024), 'image/png');
+  } catch (e) {
+    rejected = e;
+  }
+  check('本地媒体：超限文件被拒', rejected !== null && rejected.code === 40000, rejected && rejected.code);
+
+  let mimeRejected = null;
+  try {
+    await localStorage.putObject('admin-media/covers/x.exe', Buffer.from('MZ'), 'application/x-msdownload');
+  } catch (e) {
+    mimeRejected = e;
+  }
+  check('本地媒体：非白名单 MIME 被拒', mimeRejected !== null && mimeRejected.code === 40000, mimeRejected && mimeRejected.code);
+
+  check('本地媒体：删除后 stat 为空', (await localStorage.deleteObject('admin-media/covers/x.png')) === true);
+  check('本地媒体：删除不存在的文件返回 false',
+    (await localStorage.deleteObject('admin-media/covers/none.png')) === false);
+})();
 
 // ============ B. 自托管 HTTP 层 ============
 const { server } = require('../server');
@@ -134,6 +207,24 @@ async function main() {
   // POST 正常分发：请求体被解析并进入中间件链（缺令牌 → 401，而不是 500）
   const post = await call('POST', '/api/v1/child/create', { nickname: 'x', ageGroup: '3-4' });
   check('POST 缺令牌返回 401 而非 500', post.status === 401, post);
+
+  // ---- 本地媒体经 HTTP 分发（公开读） ----
+  fs.mkdirSync(path.join(mediaRoot, 'admin-media/covers'), { recursive: true });
+  fs.writeFileSync(path.join(mediaRoot, 'admin-media/covers/page1.png'), 'PNG-BYTES');
+  const media = await fetch(base + '/media/admin-media/covers/page1.png');
+  const mediaBody = await media.text();
+  check('GET /media/<key> 返回 200', media.status === 200, media.status);
+  eq('GET /media/<key> 返回文件内容', mediaBody, 'PNG-BYTES');
+  check('GET /media/<key> 带强缓存头',
+    (media.headers.get('cache-control') || '').includes('immutable'),
+    media.headers.get('cache-control'));
+
+  const missingMedia = await fetch(base + '/media/admin-media/covers/nope.png');
+  check('GET /media/<不存在的文件> 返回 404', missingMedia.status === 404, missingMedia.status);
+
+  // 路径穿越：URL 里的 ../ 会被 fetch/URL 归一化，所以用编码形式绕过
+  const evil = await fetch(base + '/media/%2e%2e%2f%2e%2e%2fetc%2fpasswd');
+  check('GET /media/<穿越路径> 不返回文件内容', evil.status !== 200, evil.status);
 
   server.close();
   console.log('\nRESULT: ' + passed + ' passed, ' + failed + ' failed');
