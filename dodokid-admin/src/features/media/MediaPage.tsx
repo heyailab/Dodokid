@@ -9,6 +9,7 @@ import {
   Can, EmptyState, ErrorState, PageHeader, formatBytes, formatDuration, useConfirm, useToast,
 } from '../../shared/components';
 import type { AdminMediaAsset } from '../../types/api';
+import { uploadMediaFile, type MediaFolder } from './uploadDirect';
 
 const FOLDERS = [
   { value: 'books', label: '绘本页' },
@@ -37,16 +38,8 @@ export function MediaPage() {
     mutationFn: async (files: FileList) => {
       const results = [];
       for (const file of Array.from(files)) {
-        const folderKey = (folder ?? guessFolder(file)) as 'books' | 'songs' | 'covers' | 'icons' | 'misc';
-        results.push(
-          await adminApi.requestUpload({
-            folder: folderKey,
-            fileName: file.name,
-            mime: file.type || 'application/octet-stream',
-            size: file.size,
-          }),
-        );
-        await new Promise((r) => setTimeout(r, 200)); // 模拟直传耗时
+        const folderKey = (folder ?? guessFolder(file)) as MediaFolder;
+        results.push(await uploadMediaFile(file, folderKey));
       }
       return results;
     },
