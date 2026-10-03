@@ -61,6 +61,13 @@ jobs:
         working-directory: dodokid
         run: npm test -- --ci
 
+      # 只做 JS 打包（约 1 分钟），提前暴露 Metro 解析类问题。
+      # 2026-10-03 实测：缺依赖声明时原生编译要跑 4 分钟才在 :app:createBundleReleaseJsAndAssets 失败，
+      # 而这一步能在门禁阶段就失败。产物落在 .expo-export-check/（已被 .gitignore 的 .expo-*/ 覆盖）。
+      - name: Bundle check (child app)
+        working-directory: dodokid
+        run: npx expo export --platform android --output-dir .expo-export-check
+
       # ---------- 后端（CloudBase 云函数）----------
       # 冒烟测试用内存态与固定夹具，不连数据库、不需要 .env
       - name: Smoke tests (backend)
@@ -107,8 +114,8 @@ jobs:
         working-directory: dodokid
         run: npm ci
 
-      # RN 0.79 / AGP 8.x 要求 JDK 17
-      - uses: actions/setup-java@v4
+      # RN 0.79 / AGP 8.x 要求 JDK 17（runner 提示 setup-java@v4 已废弃，故用 v5）
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
