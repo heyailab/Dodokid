@@ -68,7 +68,7 @@ jobs:
         working-directory: dodokid
         run: npx expo export --platform android --output-dir .expo-export-check
 
-      # ---------- 后端（CloudBase 云函数）----------
+      # ---------- 后端（Node 云函数 / 自托管 HTTP 层）----------
       # 冒烟测试用内存态与固定夹具，不连数据库、不需要 .env
       - name: Smoke tests (backend)
         working-directory: dodokid/cloudbase/functions/api
@@ -76,6 +76,7 @@ jobs:
           npm ci
           node tests/smoke-admin.test.js
           node tests/smoke-routes.test.js
+          node tests/selfhost.test.js
 
       # ---------- 运营后台（Vite / React / Ant Design）----------
       - name: Install dependencies (admin)
