@@ -1,7 +1,6 @@
 // storageCredential.service.js
-// Issues temporary COS upload credentials scoped to a single object path
-// (Spec 14.5: temporary credentials, frontend direct upload, backend only
-// stores metadata). Uses Tencent COS STS; requires COS_* env configuration.
+// 签发「直传目标」：临时 COS 凭证（对象存储）或服务器本地磁盘的上传地址。
+// 两种形态都遵循 Spec 14.5 的顺序 —— **先建元数据、再传文件**，后端只落元数据。
 
 const crypto = require('crypto');
 const config = require('../../config');
@@ -31,6 +30,19 @@ function buildCdnKey(folder, fileName) {
 }
 
 async function issueUploadCredentials(cdnKey, maxFileSize) {
+  // 本地磁盘：不需要临时凭证，给后台一个 PUT 直传地址即可。
+  // 自托管通常没有 COS，这一分支让「存绘本封面」不依赖任何外部服务。
+  if (config.mediaDriver === 'local') {
+    // 复用 appContext 里已初始化的 storage 实例，避免两处配置
+    const { storage } = require('../../appContext');
+    if (typeof storage.uploadTargetFor !== 'function') {
+      throw errors.internal(
+        'MEDIA_DRIVER=' + config.mediaDriver + ' requires a local media storage, but it is not active'
+      );
+    }
+    return storage.uploadTargetFor(cdnKey, maxFileSize);
+  }
+
   if (!config.cosSecretId || !config.cosSecretKey || !config.cosBucket) {
     throw errors.internal(
       'Media upload credentials are not configured; set COS_SECRET_ID, COS_SECRET_KEY and COS_BUCKET'
