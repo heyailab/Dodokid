@@ -22,9 +22,13 @@ async function listMedia(filters, page, limit) {
 }
 
 const getById = (id) => base.getById(NAME, id);
+// 直传落盘时按 cdnKey 找回元数据（先建元数据、后传文件，AC-12）
+const getByCdnKey = (cdnKey) => base.findOneWhere(NAME, { cdnKey });
 const create = (doc) => base.insert(NAME, doc);
 const removeById = (id) => base.removeById(NAME, id);
 const countAll = () => base.countWhere(NAME, {});
+// 直传完成后以实际字节数回写，避免元数据与磁盘不一致
+const updateFields = (id, patch) => base.updateById(NAME, id, patch);
 
 // ADR-006 section 5: hard-deleting a content item keeps the media files
 // reusable; only the itemId binding is cleared.
@@ -33,4 +37,14 @@ async function unbindFromItem(itemId) {
   return true;
 }
 
-module.exports = { NAME, listMedia, getById, create, removeById, countAll, unbindFromItem };
+module.exports = {
+  NAME,
+  listMedia,
+  getById,
+  getByCdnKey,
+  create,
+  removeById,
+  countAll,
+  updateFields,
+  unbindFromItem,
+};
