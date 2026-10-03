@@ -46,9 +46,11 @@ ProtectHome=true
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
-# 服务不需要写任何文件
 ProtectKernelModules=true
 LockPersonality=true
+# 唯一需要写入的目录：本地媒体根目录（MEDIA_ROOT）。
+# 目录属主必须是下面的 User，否则媒体上传会因权限失败。
+ReadWritePaths=/var/lib/dodokid
 
 [Install]
 WantedBy=multi-user.target
