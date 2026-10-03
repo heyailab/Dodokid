@@ -59,8 +59,29 @@ const config = {
   cosRegion: str('COS_REGION', 'ap-guangzhou'),
   mediaCdnBaseUrl: str('MEDIA_CDN_BASE_URL', ''),
 
+  // ---- 部署形态 ----
+  // cloudbase：腾讯云 CloudBase 云函数 + 文档数据库（默认）
+  // mongo：自托管，数据库用 MongoDB（见 db/mongo.js）
+  dbDriver: str('DB_DRIVER', 'cloudbase'),
+  // 仅在云函数之外运行（本地/工具脚本）时需要；云函数运行时由平台注入
+  tcbSecretId: str('TCB_SECRET_ID', ''),
+  tcbSecretKey: str('TCB_SECRET_KEY', ''),
+  mongoUri: str('MONGODB_URI', 'mongodb://127.0.0.1:27017'),
+  mongoDbName: str('MONGODB_DB', 'dodokid'),
+  mongoServerSelectionTimeoutMs: str('MONGODB_SERVER_SELECTION_TIMEOUT_MS', '8000'),
+
+  // ---- 自托管 HTTP 层（server.js；CloudBase 形态不使用）----
+  httpPort: Number(str('PORT', '8080')),
+  httpBasePath: str('HTTP_BASE_PATH', '/api/v1'),
+  trustProxy: str('TRUST_PROXY', '1'),
+
   devMode: nodeEnv !== 'production',
 };
+
+// 自托管形态的必填项：媒体域名缺省会让绘本封面 404，早失败好过线上排查
+if (config.dbDriver === 'mongo' && !config.mediaCdnBaseUrl && !config.devMode) {
+  throw new Error('MEDIA_CDN_BASE_URL is required when DB_DRIVER=mongo');
+}
 
 // Fail fast in production if the JWT secret is missing.
 if (!config.jwtSecret && !config.devMode) {
