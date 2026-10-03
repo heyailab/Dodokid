@@ -78,7 +78,7 @@ npm run dev
 npm run build
 ```
 
-> ⚠️ 后台构建/部署**必须**注入 `VITE_API_BASE`（见 `dodokid-admin/.env.production`）。
+> 注意：后台构建/部署**必须**注入 `VITE_API_BASE`（见 `dodokid-admin/.env.production`）。
 > 缺省时构建会打包并启用 MSW Mock，表现为「构建成功但连不上后端」——这是最常见的静默故障。
 
 ### 后端云函数
@@ -119,11 +119,26 @@ node tests/smoke-routes.test.js     # 29 条断言
 
 | 文档 | 内容 |
 |------|------|
+| `docs/deploy-dodokid-heymf-cn.md` | **上线执行文档**（全自托管：Docker + MongoDB + Nginx，域名 `dodokid.heymf.cn`） |
 | `docs/Spec-DodoKid.md` | **规格即契约**：范围、API、页面、设计 Token、验收标准（AC-01~21） |
 | `docs/roadmap-modules.md` | P2 互动模块（识字 / 数学 / 英语 / 益智）规划与交付记录 |
-| `docs/deployment-plan.md` | 部署方案：双环境、集合初始化、上线检查清单、回滚 |
+| `docs/deployment-plan.md` | 备选部署方案（CloudBase 云函数 + 多子域名） |
 | `docs/decisions/OPEN-DECISIONS.md` | 未决/已决事项登记册（含关闭证据） |
 | `docs/decisions/ADR-*.md` | 架构决策记录 |
+
+---
+
+## 后端部署形态
+
+后端是**一份代码、两种形态**，由环境变量 `DB_DRIVER` 切换，业务层不做区分：
+
+| `DB_DRIVER` | 数据库 | HTTP 层 | 部署方式 |
+|-------------|--------|---------|---------|
+| `mongo`（**当前采用**） | MongoDB（经薄适配层） | `server.js`（Express，能返回真实 4xx/5xx） | `docker compose up -d` |
+| `cloudbase` | CloudBase 文档数据库（原生） | 云函数触发器 | `tcb fn deploy api --dir .` |
+
+之所以能共用一套代码：全仓对数据库的依赖面被刻意控制得很窄（无聚合、事务、批量写），
+适配层只做映射。详见 `dodokid/cloudbase/README.md`。
 
 ---
 
