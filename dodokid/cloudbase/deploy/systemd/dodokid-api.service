@@ -1,0 +1,54 @@
+# DodoKid API —— systemd 服务单元（直接部署，无 Docker）
+#
+# 安装：
+#   sudo cp deploy/systemd/dodokid-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now dodokid-api
+#
+# 前提：/opt/dodokid/dodokid/cloudbase 下已 `npm ci`，且 .env 已填好真实值。
+
+[Unit]
+Description=DodoKid API (Node/Express, self-hosted)
+Documentation=https://github.com/heyailab/Dodokid
+After=network-online.target mongod.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# 专用非登录用户，避免用 root 跑业务进程
+User=dodokid
+Group=dodokid
+
+WorkingDirectory=/opt/dodokid/dodokid/cloudbase/functions/api
+
+# 所有配置走环境变量文件（含 JWT_SECRET），不写进命令行（ps 可见）
+EnvironmentFile=/opt/dodokid/dodokid/cloudbase/.env
+
+ExecStart=/usr/bin/node server.js
+
+Restart=always
+RestartSec=3
+# 反复崩溃时不要无限重启：5 分钟内超过 5 次就停下等人介入
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dodokid-api
+
+# ---- 安全加固 ----
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+# 服务不需要写任何文件
+ProtectKernelModules=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
