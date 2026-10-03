@@ -85,6 +85,13 @@ export const put = <T>(path: string, data: unknown) =>
   http<T>(path, { method: 'PUT', body: JSON.stringify(data) });
 export const del = <T>(path: string) => http<T>(path, { method: 'DELETE' });
 
+/**
+ * 二进制直传（媒体上传用）：请求体是文件字节，不能强制 JSON Content-Type。
+ * 其余处理（Bearer 注入、信封解析、401/403 回调）与 http 完全一致。
+ */
+export const putBinary = <T>(path: string, body: Blob, contentType: string) =>
+  http<T>(path, { method: 'PUT', body, headers: { 'Content-Type': contentType } });
+
 export function qs(params: Record<string, string | number | string[] | undefined>): string {
   const sp = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
