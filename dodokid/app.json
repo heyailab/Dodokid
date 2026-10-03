@@ -38,10 +38,7 @@
       ]
     ],
     "extra": {
-      "apiBaseUrl": "https://your-cloudbase-domain.example.com/api/v1",
-      "eas": {
-        "projectId": "00000000-0000-0000-0000-000000000000"
-      }
+      "apiBaseUrl": "https://dodokid.heymf.cn/api/v1"
     }
   }
 }
