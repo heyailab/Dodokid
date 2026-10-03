@@ -14,7 +14,7 @@
 运营后台 (浏览器)─┘        （同源，无 CORS）               (HTTPS)     └─►  Node 进程（systemd 托管）
 后台静态文件      ◄──────── Nginx 直接托管 /var/www/dodokid-admin
 MongoDB          监听 127.0.0.1:27017，仅本机可达（不开公网）
-绘本封面/音频     ◄──────── MEDIA_CDN_BASE_URL 指向的对象存储（独立服务）
+绘本封面/音频     ◄──────── MEDIA_ROOT（服务器磁盘，经 Nginx /media 直出）
 ```
 
 | # | 项目 | 必需 | 说明 |
@@ -24,8 +24,10 @@ MongoDB          监听 127.0.0.1:27017，仅本机可达（不开公网）
 | 3 | **systemd** | 是 | 拉起与守护 API 进程（CentOS/RHEL 需先 `yum install systemd`） |
 | 4 | **Nginx + HTTPS 证书** | 是 | 入口与反代。**没证书 App 全部请求失败**（Android 9+ 禁用明文） |
 | 5 | **运营后台 dist** | 是 | `dodokid-admin` 构建产物，纯静态 |
-| 6 | **对象存储 / COS** | 建议 | 绘本封面与音频，**没有它绘本无图无音** |
-| 7 | **ICP 备案** | 是 | 大陆境内服务器绑 80/443 的硬前提 |
+| 6 | **硬盘空间** | 是 | 绘本封面与音频直接存服务器磁盘，按音频总量预留（10MB/个，100 个约 1GB） |
+
+> **不需要 ICP 备案**（服务器在境外）。**也不需要对象存储** —— 媒体默认存服务器本地磁盘。
+> 注意：将来若把服务器迁回大陆境内，域名必须先完成 ICP 备案才能绑 80/443。
 
 安装目录约定（后续命令都基于它）：
 
@@ -58,12 +60,16 @@ node -v     # 期望 v22.x
 ### MongoDB（8.0；7.0 亦可）
 
 ```bash
-# ---- Debian / Ubuntu（Ubuntu 22.04 把 noble 换成 jammy）----
+# ---- Debian 12 (bookworm) ----
+sudo apt install -y gnupg curl
 curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc \
   | sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
-echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" \
+echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/debian bookworm/mongodb-org/8.0 main" \
   | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
 sudo apt update && sudo apt install -y mongodb-org
+
+# ---- Ubuntu（22.04 用 jammy，24.04 用 noble）----
+# 把上面 echo 里的 debian bookworm 换成 ubuntu jammy 或 noble 即可
 
 # ---- RHEL / Rocky / Alma 9 ----
 curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc \
@@ -145,7 +151,19 @@ chmod 600 .env                     # 里面有 JWT_SECRET，必须只有属主�
 DB_DRIVER=mongo
 MONGODB_URI=mongodb://dodokid:<第3步的密码>@127.0.0.1:27017/dodokid?authSource=dodokid
 JWT_SECRET=<openssl rand -hex 32 的输出>
-MEDIA_CDN_BASE_URL=https://<你的媒体域名>
+
+# 媒体：存服务器本地磁盘，不需要开通任何对象存储
+MEDIA_DRIVER=local
+MEDIA_ROOT=/var/lib/dodokid/media
+MEDIA_PUBLIC_PATH=/media
+MEDIA_CDN_BASE_URL=https://dodokid.heymf.cn/media
+```
+
+再建一次媒体目录并交给运行 API 的用户（**目录权限忘了会导致上传失败**）：
+
+```bash
+sudo mkdir -p /var/lib/dodokid/media
+sudo chown -R dodokid:dodokid /var/lib/dodokid
 ```
 
 - `JWT_SECRET` 或 `MEDIA_CDN_BASE_URL` 缺失时**进程会拒绝启动**（fail-fast）。这是刻意设计：带着空配置启动，绘本封面会 404，排查成本远高于启动失败。
@@ -222,17 +240,24 @@ sudo chown -R www-data:www-data /var/www/dodokid-admin
 ## 9. 配备份（必做）
 
 ```bash
-sudo cp deploy/backup-mongo.sh /usr/local/bin/dodokid-backup-mongo
-sudo chmod +x /usr/local/bin/dodokid-backup-mongo
+sudo cp deploy/backup-mongo.sh /usr/local/bin/dodokid-backup
+sudo chmod +x /usr/local/bin/dodokid-backup
 sudo crontab -e
 # 每天 03:17 备份，保留 14 天
-17 3 * * * /usr/local/bin/dodokid-backup-mongo >> /var/log/dodokid-backup.log 2>&1
+17 3 * * * /usr/local/bin/dodokid-backup >> /var/log/dodokid-backup.log 2>&1
 
 # 先手动跑一次确认可用
-sudo /usr/local/bin/dodokid-backup-mongo
+sudo /usr/local/bin/dodokid-backup
 ```
 
-备份文件在 `/var/backups/dodokid/`，**请再同步一份到别处**（另一台机器或对象存储）—— 备份和源机同盘等于没备份。
+脚本会产出两份（**媒体在本地磁盘上，所以必须一起备，否则素材全丢**）：
+
+```
+/var/backups/dodokid/dodokid-YYYY-MM-DD-db.archive.gz     ← mongodump
+/var/backups/dodokid/dodokid-YYYY-MM-DD-media.tar.gz     ← MEDIA_ROOT 打包
+```
+
+**请再同步一份到别处**（另一台机器或对象存储）—— 备份和源机同盘等于没备份。
 
 ---
 
@@ -250,7 +275,12 @@ curl -s https://dodokid.heymf.cn/ | grep -o '<title>[^<]*'
 curl -s https://dodokid.heymf.cn/api/v1/version
 curl -s -o /dev/null -w '%{http_code}\n' https://dodokid.heymf.cn/api/v1/child/list   # 401
 
-# 4) 进程与数据库
+# 4) 本地媒体能读（先自行放一个测试文件）
+sudo -u dodokid mkdir -p /var/lib/dodokid/media/admin-media/covers
+echo test > /var/lib/dodokid/media/admin-media/covers/probe.png
+curl -s -o /dev/null -w '%{http_code}\n' https://dodokid.heymf.cn/media/admin-media/covers/probe.png   # 200
+
+# 5) 进程与数据库
 systemctl is-active dodokid-api mongod      # active active
 sudo journalctl -u dodokid-api -n 50 --no-pager
 ```
@@ -291,7 +321,8 @@ sudo vi /opt/dodokid/dodokid/cloudbase/.env && sudo systemctl restart dodokid-ap
 | App 全部请求失败 | 证书没签 / 域名解析错。先 `curl -I https://域名` 确认；Android 9+ 不允许明文 HTTP |
 | API 全 404 | `proxy_pass` 加了路径后缀。必须是 `proxy_pass http://127.0.0.1:8080;` |
 | 限流不准 / 所有人共用一个配额 | Nginx 少了 `X-Real-IP` / `X-Forwarded-For` 透传 |
-| 绘本封面音频 404 | `MEDIA_CDN_BASE_URL` 没配，或素材还是种子占位值 |
+| 绘本封面音频 404 | `MEDIA_DRIVER=local` 且 `MEDIA_CDN_BASE_URL` 应以 `/media` 结尾；Nginx 的 `alias` 路径要与 `MEDIA_ROOT` 一致；种子数据里是占位值，需在后台重新上传 |
+| 上传返回 500 / 权限错误 | `MEDIA_ROOT` 目录属主必须是 `dodokid`（systemd 以该用户运行），且在单元文件的 `ReadWritePaths` 里 |
 | `mongod` 起不来报 Illegal instruction | CPU 不支持 AVX。换机型或改用 MongoDB 4.4 |
 | 进程反复重启 | `journalctl -u dodokid-api -n 100` 看真实报错；多半是 `.env` 缺 `JWT_SECRET`，或 `MONGODB_URI` 连不上 |
 | 数据库连不上 | 鉴权已开但 URI 没带凭证，或 `authSource` 写错（应为 `dodokid`） |
