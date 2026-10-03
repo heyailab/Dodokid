@@ -2,18 +2,16 @@
 // Seeds the content catalog: modules, picture-book items (age 4-6), and a habit
 // task library, plus their media asset references. Idempotent by key/title.
 //
-// Run from a CloudBase cloud function context, or locally with:
-//   TCB_ENV=xxx TCB_SECRET_ID=xxx TCB_SECRET_KEY=xxx node seed-content.js
+// 两种数据库形态共用同一份数据与写入逻辑（只用 where().get() 与 add()，
+// 两者都在自托管适配器内实现）：
+//   CloudBase：TCB_ENV=xxx TCB_SECRET_ID=xxx TCB_SECRET_KEY=xxx node seed-content.js
+//   MongoDB  ：DB_DRIVER=mongo MONGODB_URI=xxx node seed-content.js
 // Placeholder cdnKey/url values should be replaced with real uploaded assets.
 
-const tcb = require('@cloudbase/node-sdk');
+const { createContext } = require('../functions/api/db/context');
+const config = require('./config');
 
-const app = tcb.init({
-  env: process.env.TCB_ENV,
-  secretId: process.env.TCB_SECRET_ID,
-  secretKey: process.env.TCB_SECRET_KEY,
-});
-const db = app.database();
+const { db } = createContext(config);
 
 const MODULES = [
   { key: 'picture_book', name: '绘本故事', colorToken: '#4F9DDE' },
