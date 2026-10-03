@@ -159,6 +159,13 @@ jobs:
 
       - name: Assemble release APK
         working-directory: dodokid/android
+        # 正式包必须连真实后端。EXPO_PUBLIC_* 会被 Metro 内联进 JS bundle，
+        # 因此必须在 Gradle 打包步骤注入（bundle 正是在这一步生成的）。
+        # 取值优先级：仓库变量（Settings → Secrets and variables → Actions → Variables）> 默认值。
+        # 本地 `npm start` 不带这些变量 → 走内置 Mock，不受此处影响。
+        env:
+          EXPO_PUBLIC_API_BASE_URL: ${{ vars.EXPO_PUBLIC_API_BASE_URL || 'https://dodokid.heymf.cn/api/v1' }}
+          EXPO_PUBLIC_USE_MOCK: ${{ vars.EXPO_PUBLIC_USE_MOCK || 'false' }}
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
