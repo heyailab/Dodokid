@@ -1,5 +1,8 @@
 # DodoKid 部署方案（Phase 4）
 
+> **实际执行请看 [`docs/deploy-dodokid-heymf-cn.md`](./deploy-dodokid-heymf-cn.md)**（单域名 `dodokid.heymf.cn` + 自有服务器方案，含可直接使用的 Nginx 配置与验收命令）。
+> 本文保留为**多子域名 + EAS 的备选方案**，两者差异见新文档末节。
+
 作者：卜宕机（运维工程师） 日期：2026-10-02
 适用范围：CloudBase 后端（云函数 api + 云数据库 + 云存储）、运营后台 Web（dodokid-admin）、儿童 App（EAS，本次仅列规划）。
 契约依据：`docs/Spec-DodoKid.md`（§5 API、§6 DB 集合、§14 内容维护详设、AC-09/10/11/13/15）。
