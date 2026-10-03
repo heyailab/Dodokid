@@ -11,7 +11,7 @@
 const express = require('express');
 const config = require('./config');
 const { handleRequest } = require('./index');
-const { db } = require('./appContext');
+const { db, storage } = require('./appContext');
 
 const app = express();
 
@@ -19,8 +19,55 @@ const app = express();
 app.set('trust proxy', config.trustProxy);
 app.disable('x-powered-by');
 
+/**
+ * 媒体直传端点必须在 JSON 解析**之前**处理：请求体是图片/音频的原始字节，
+ * 走 express.json 会被解析失败。body-parser 解析过��会打标记，
+ * 因此后面的 express.json 不会再重复处理这个请求。
+ */
+const blobPath = config.httpBasePath + '/admin/media/blob';
+app.use(
+  blobPath,
+  express.raw({ type: '*/*', limit: (config.mediaMaxSizeMB || 50) + 'mb' }),
+  (req, _res, next) => {
+    req.rawBody = Buffer.isBuffer(req.body) ? req.body : null;
+    next();
+  }
+);
+
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: false, limit: '2mb' }));
+
+/**
+ * 本地媒体分发（MEDIA_DRIVER=local 时的默认读路径）。
+ * 生产建议让 Nginx 用 alias 直接托管（见 deploy/nginx/dodokid.conf），
+ * Node 侧这份实现的价值在于：本地开发无需额外配 Nginx 也能跑通全链路。
+ */
+if (config.mediaPublicPath && storage && typeof storage.resolvePath === 'function') {
+  const mediaPrefix = config.mediaPublicPath;
+  app.get(mediaPrefix + '/*', (req, res) => {
+    // 注意：app.get 带路径参数时**不会**剥掉挂载前缀（只有 app.use 会），
+    // 所以这里要自己切掉 /media 前缀，否则解析出的路径会多一层 media/。
+    const key = decodeURIComponent(req.path.slice(mediaPrefix.length).replace(/^\//, ''));
+    let file;
+    try {
+      file = storage.resolvePath(key); // 内部已做路径穿越校验
+    } catch (err) {
+      return res.status(400).json({ success: false, code: 40000, message: 'Invalid media key', data: null });
+    }
+    res.sendFile(
+      file,
+      {
+        // cdnKey 里带 uuid，文件内容变更即换名，可长期强缓存
+        headers: { 'Cache-Control': 'public, max-age=31536000, immutable' },
+      },
+      (err) => {
+        if (err && !res.headersSent) {
+          res.status(404).json({ success: false, code: 40400, message: 'Media not found', data: null });
+        }
+      }
+    );
+  });
+}
 
 /** 业务码 → HTTP 状态码。code 0 表示成功；其余取高位（40000 → 400）。 */
 function statusFor(code) {
@@ -51,6 +98,8 @@ app.use(config.httpBasePath, async (req, res) => {
       path,
       query: req.query,
       body: req.body,
+      // 直传端点的原始字节（其余请求为 undefined）
+      rawBody: req.rawBody,
       headers: req.headers,
     });
     res.status(statusFor(result.code)).json(result);
