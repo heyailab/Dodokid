@@ -4,6 +4,7 @@ import { Check, Images, LinkSimple, MusicNote, Plus } from '@phosphor-icons/reac
 import { Drawer, Select } from 'antd';
 import { useState } from 'react';
 import { adminApi } from '../../lib/api';
+import { uploadMediaFile, type MediaFolder } from '../media/uploadDirect';
 import { EmptyState, ErrorState, TableSkeleton, formatBytes, formatDuration, useToast } from '../../shared/components';
 import type { AdminMediaAsset } from '../../types/api';
 
@@ -38,15 +39,7 @@ export function MediaPickerDrawer({
   });
   const upload = useMutation({
     mutationFn: async (file: File) => {
-      const res = await adminApi.requestUpload({
-        folder: (folder ?? 'misc') as 'books' | 'songs' | 'covers' | 'icons' | 'misc',
-        fileName: file.name,
-        mime: file.type || 'application/octet-stream',
-        size: file.size,
-      });
-      // 直传：临时凭证已下发；演示环境凭证即契约占位，实际对象由存储 SDK 写入
-      await simulateDirectUpload(file, res.upload.storagePath);
-      return res;
+      return uploadMediaFile(file, (folder ?? 'misc') as MediaFolder);
     },
     onSuccess: () => {
       toast.success('上传完成');
@@ -146,11 +139,4 @@ function MediaCell({
       </div>
     </div>
   );
-}
-
-async function simulateDirectUpload(file: File, storagePath: string): Promise<void> {
-  // 实际实现：使用 MediaUploadResult.upload 临时凭证调用云存储 SDK 分片直传
-  await new Promise((r) => setTimeout(r, 300));
-  void file;
-  void storagePath;
 }
