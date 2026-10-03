@@ -54,8 +54,12 @@ function parseQuery(qs) {
   return out;
 }
 
-exports.main = async (event, context) => {
-  const req = buildRequest(event);
+/**
+ * 核心分发：与运行形态无关。CloudBase 云函数（exports.main）与自托管 HTTP 层
+ * （server.js）都调用它，确保两种部署下路由、中间件与错误行为完全一致 ——
+ * 不允许出现两套路由实现，否则行为会随部署形态漂移。
+ */
+async function handleRequest(req) {
   const ctx = { req, params: {}, user: null, gate: null };
   try {
     const matched = matchRoute(routes, req.method, req.path);
@@ -78,4 +82,11 @@ exports.main = async (event, context) => {
     }
     return handleError(err);
   }
-};
+}
+
+/** CloudBase 云函数入口：把云函数 HTTP 事件规整为请求后交给 handleRequest。 */
+exports.main = async (event) => handleRequest(buildRequest(event));
+
+// 供自托管 HTTP 层复用（server.js）
+exports.handleRequest = handleRequest;
+exports.buildRequest = buildRequest;
