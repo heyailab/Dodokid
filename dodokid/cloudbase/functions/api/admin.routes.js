@@ -73,6 +73,8 @@ const adminRoutes = [
   // --- media -----------------------------------------------------------------
   { method: 'GET', path: P + '/media', middlewares: [logger, auth, editor], handler: mediaC.list },
   { method: 'POST', path: P + '/media', middlewares: [logger, auth, editor, validate(v.vMediaUpload)], handler: mediaC.upload },
+  // 直传落盘（仅本地磁盘形态可用；对象存储由后台直传 COS，不经过后端）
+  { method: 'PUT', path: P + '/media/blob', middlewares: [logger, auth, editor], handler: mediaC.storeBlob },
   { method: 'GET', path: P + '/media/:id', middlewares: [logger, auth, editor], handler: mediaC.get },
   { method: 'DELETE', path: P + '/media/:id', middlewares: [logger, auth, admin], handler: mediaC.remove },
 
