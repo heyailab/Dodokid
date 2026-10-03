@@ -1,8 +1,20 @@
-# DodoKid CloudBase Backend
+# DodoKid Backend
 
-Backend for DodoKid, a children's early-education app, built on Tencent CloudBase
-(BaaS): one Node.js cloud function (`api`) plus the CloudBase document database,
-built-in auth, and cloud storage.
+Backend for DodoKid, a children's early-education app. **同一份代码支持两种部署形态**，
+由环境变量 `DB_DRIVER` 切换，业务层（repositories / services / controllers）完全一致：
+
+| `DB_DRIVER` | 形态 | 数据库 | HTTP 层 | 部署 |
+|-------------|------|--------|---------|------|
+| `cloudbase`（默认） | 腾讯云 CloudBase | CloudBase 文档数据库（原生） | 云函数触发器 | `tcb fn deploy api --dir .` |
+| `mongo` | **自托管** | MongoDB（经 `functions/api/db/mongo.js` 适配） | `server.js`（Express，**能返回真实 4xx/5xx**） | `docker compose up -d` |
+
+自托管形态的完整步骤见 [`docs/deploy-dodokid-heymf-cn.md`](../../docs/deploy-dodokid-heymf-cn.md)。
+
+> 为什么能共用一套代码：全仓对数据库的依赖面被刻意控制得很小 —— 只有
+> `collection().add / doc().get|set|update|remove / where().orderBy|skip|limit|get|count|update|remove`
+> 与三个操作符（`inc` / `in` / `RegExp`），**没有聚合、事务、批量写**。
+> 适配器就是在这条窄接口上做映射的；日后若引入聚合/事务，需同步扩展 `db/mongo.js`，
+> 不要在 repositories 里直接写 Mongo 原生 API，否则会破坏两种形态同源的前提。
 
 This package contains MVP code only. It is not deployed (no credentials were
 used). Follow the deployment steps below to publish it.
