@@ -1,0 +1,78 @@
+# DodoKid 自托管编排（完全脱离 CloudBase）
+#
+# 组成：
+#   mongo  —— 数据库（文档数据，与原 CloudBase 文档库结构一致）
+#   api    —— Node HTTP 服务（Express），监听 8080
+#   db-tools —— 一次性任务：建集合/索引、灌种子数据（用 profile 控制，默认不启动）
+#
+# 对外只暴露 Nginx（本目录之外单独配置），本文件里的端口都绑在回环地址上：
+#   - mongo 不映射任何端口，外部完全无法直连数据库；
+#   - api 只监听 127.0.0.1:8080，必须经 Nginx 走 HTTPS 才能访问，
+#     避免绕过 TLS 与证书（也避免把无 TLS 的接口暴露到公网）。
+#
+# 用法：
+#   cp .env.example .env && 填好真实值
+#   docker compose up -d mongo api
+#   docker compose --profile tools run --rm db-tools            # 建集合与索引
+#   docker compose --profile tools run --rm db-tools node seed-content.js
+#
+# 变量缺失会直接报错退出（${VAR:?...}），避免带着空密码启动。
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    # 故意不写 ports：数据库只在 compose 内部网络可达
+
+  api:
+    build:
+      context: ./functions/api
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DB_DRIVER: mongo
+      MONGODB_URI: mongodb://mongo:27017
+      MONGODB_DB: ${MONGODB_DB:-dodokid}
+      JWT_SECRET: ${JWT_SECRET:?请在 .env 设置 JWT_SECRET（随机长串）}
+      MEDIA_CDN_BASE_URL: ${MEDIA_CDN_BASE_URL:?请设置媒体公开域名，例如 https://media.dodokid.heymf.cn}
+      APP_VERSION: ${APP_VERSION:-1.0.0}
+      MIN_APP_VERSION: ${MIN_APP_VERSION:-1.0.0}
+      PRIVACY_POLICY_URL: ${PRIVACY_POLICY_URL:-https://dodokid.heymf.cn/privacy}
+      # 媒体上传走腾讯云 COS 直传（不依赖 CloudBase），未开通 COS 时留空即可
+      COS_SECRET_ID: ${COS_SECRET_ID:-}
+      COS_SECRET_KEY: ${COS_SECRET_KEY:-}
+      COS_BUCKET: ${COS_BUCKET:-}
+      COS_REGION: ${COS_REGION:-ap-guangzhou}
+    ports:
+      # 只绑回环：外部必须经 Nginx（HTTPS）访问
+      - '127.0.0.1:8080:8080'
+
+  db-tools:
+    build:
+      context: .
+      dockerfile: db/Dockerfile.tools
+    profiles: ['tools']
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      DB_DRIVER: mongo
+      MONGODB_URI: mongodb://mongo:27017
+      MONGODB_DB: ${MONGODB_DB:-dodokid}
+      MEDIA_CDN_BASE_URL: ${MEDIA_CDN_BASE_URL:-}
+      COS_BUCKET: ${COS_BUCKET:-}
+      COS_REGION: ${COS_REGION:-ap-guangzhou}
+
+volumes:
+  mongo-data:
