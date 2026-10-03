@@ -246,9 +246,31 @@ const workflow = require('../services/admin/contentWorkflow.service');
   await throwsWith('upload oversize -> 40000', () =>
     mediaService.uploadMedia(editorU, IP, { folder: 'books', fileName: 'a.png', mime: 'image/png', size: 999 * 1024 * 1024 }),
     (e) => e.code === 40000);
-  await throwsWith('upload without COS config -> clear config error, metadata kept', () =>
+  // 媒体直传目标：自托管默认是「服务器本地磁盘」，应返回 PUT 端点而不是要求配 COS
+  const appContextPath = require.resolve('../appContext');
+  const savedStorage = require.cache[appContextPath].exports.storage;
+  require.cache[appContextPath].exports.storage = {
+    uploadTargetFor: (key, max) => ({
+      driver: 'local',
+      method: 'PUT',
+      uploadPath: '/api/v1/admin/media/blob?key=' + encodeURIComponent(key),
+      storagePath: key,
+      maxFileSize: max,
+      headers: { 'Content-Type': 'image/png' },
+    }),
+  };
+  const localTarget = await mediaService.uploadMedia(editorU, IP, {
+    folder: 'covers', fileName: 'b.png', mime: 'image/png', size: 2048,
+  });
+  check('local media driver -> PUT upload target',
+    Boolean(localTarget.upload) && localTarget.upload.driver === 'local' &&
+      localTarget.upload.method === 'PUT' && /media\/blob\?key=/.test(localTarget.upload.uploadPath),
+    localTarget.upload);
+  require.cache[appContextPath].exports.storage = savedStorage;
+
+  await throwsWith('upload with no active media driver -> clear error', () =>
     mediaService.uploadMedia(editorU, IP, { folder: 'books', fileName: 'a.png', mime: 'image/png', size: 1000 }),
-    (e) => e.code === 50000 && /COS_SECRET_ID/.test(e.message));
+    (e) => e.code === 50000 && /MEDIA_DRIVER/.test(e.message));
   check('media metadata record persisted before credentials (AC-12)',
     S.media_assets.some((m) => m.fileName === 'a.png' && m.uploadedBy === 'u_editor'));
 
