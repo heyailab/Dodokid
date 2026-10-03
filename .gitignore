@@ -29,6 +29,9 @@ coverage/
 .env
 .env.*
 !.env.example
+# 后台生产配置只含非敏感路径（VITE_API_BASE），必须入库，
+# 否则 CI/他人克隆后构建出的后台会静默启用内置 Mock。
+!dodokid-admin/.env.production
 
 # ---------- 日志 ----------
 *.log
