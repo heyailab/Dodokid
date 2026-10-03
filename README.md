@@ -130,15 +130,18 @@ node tests/smoke-routes.test.js     # 29 条断言
 
 ## 后端部署形态
 
-后端是**一份代码、两种形态**，由环境变量 `DB_DRIVER` 切换，业务层不做区分：
+后端是**一份代码两种驱动**，由环境变量 `DB_DRIVER` 切换，业务层不做区分：
 
 | `DB_DRIVER` | 数据库 | HTTP 层 | 部署方式 |
 |-------------|--------|---------|---------|
-| `mongo`（**当前采用**） | MongoDB（经薄适配层） | `server.js`（Express，能返回真实 4xx/5xx） | `docker compose up -d` |
+| `mongo`（**当前采用**） | MongoDB（经薄适配层） | `server.js`（Express，能返回真实 4xx/5xx） | **直接部署**（系统级 Node + MongoDB + systemd）或 Docker |
 | `cloudbase` | CloudBase 文档数据库（原生） | 云函数触发器 | `tcb fn deploy api --dir .` |
 
 之所以能共用一套代码：全仓对数据库的依赖面被刻意控制得很窄（无聚合、事务、批量写），
 适配层只做映射。详见 `dodokid/cloudbase/README.md`。
+
+上线执行文档（直接部署，含 systemd / Nginx 配置与验收命令）：
+**[`docs/deploy-dodokid-heymf-cn.md`](docs/deploy-dodokid-heymf-cn.md)**
 
 ---
 
