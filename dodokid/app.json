@@ -1,0 +1,47 @@
+{
+  "expo": {
+    "name": "DodoKid",
+    "slug": "dodokid",
+    "scheme": "dodokid",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "assetBundlePatterns": ["**/*"],
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#FFF9F2"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.dodokid.app"
+    },
+    "android": {
+      "package": "com.dodokid.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#FFF9F2"
+      },
+      "permissions": ["RECORD_AUDIO", "INTERNET"]
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-audio",
+      [
+        "expo-sqlite",
+        {
+          "enableFTS": true
+        }
+      ]
+    ],
+    "extra": {
+      "apiBaseUrl": "https://your-cloudbase-domain.example.com/api/v1",
+      "eas": {
+        "projectId": "00000000-0000-0000-0000-000000000000"
+      }
+    }
+  }
+}

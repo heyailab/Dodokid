@@ -1,0 +1,47 @@
+# ---------- 依赖 ----------
+node_modules/
+.pnp
+.pnp.js
+
+# ---------- 构建产物 ----------
+dist/
+build/
+web-build/
+coverage/
+*.tsbuildinfo
+
+# ---------- Expo ----------
+# 本地缓存与 web 检查产物（.expo / .expo-shared / .expo-web-check 等）
+.expo/
+.expo-*/
+# expo prebuild 生成的原生工程：由 CI 或本地 `npx expo prebuild` 重新生成，不入库
+/dodokid/android/
+/dodokid/ios/
+
+# ---------- Android 签名产物（严禁入库）----------
+*.apk
+*.aab
+*.keystore
+*.jks
+!*.keystore.example
+
+# ---------- 环境变量与密钥（模板文件保留）----------
+.env
+.env.*
+!.env.example
+
+# ---------- 日志 ----------
+*.log
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---------- 编辑器 / 系统 ----------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# ---------- 本地工具数据（记忆日志、团队任务目录）----------
+.workbuddy/

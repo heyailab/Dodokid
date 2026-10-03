@@ -1,0 +1,160 @@
+{
+  "$schema": "https://design-tokens.org/schema.json",
+  "name": "DodoKid Admin",
+  "description": "DodoKid 运营后台主题 Token（中性冷白 + 品牌薄荷青同源）。前端通过 import tokens from './design-tokens-admin.json' 引用。",
+  "meta": {
+    "register": "product",
+    "platform": "web",
+    "designVariance": 2,
+    "motionIntensity": 2,
+    "visualDensity": 7,
+    "iconLibrary": "phosphor",
+    "theme": "light-only"
+  },
+  "color": {
+    "surface": {
+      "bg": { "value": "#F6F8FA", "type": "color", "layer": "A1", "desc": "页面底层（冷白）" },
+      "default": { "value": "#FFFFFF", "type": "color", "layer": "A1", "desc": "卡片/面板/表格容器" },
+      "sunken": { "value": "#F7F9FA", "type": "color", "layer": "B", "desc": "表头/斑马纹偶数行" },
+      "hover": { "value": "#EFF4F5", "type": "color", "layer": "B", "desc": "行/区域悬停" },
+      "active": { "value": "#E7EEEF", "type": "color", "layer": "C", "desc": "行/区域按下" }
+    },
+    "border": {
+      "default": { "value": "#E3E8EC", "type": "color", "layer": "A1" },
+      "soft": { "value": "#EEF2F5", "type": "color", "layer": "B", "desc": "表格内部行分隔" },
+      "strong": { "value": "#CBD4DA", "type": "color", "layer": "B", "desc": "输入框/强调分隔" }
+    },
+    "fg": {
+      "default": { "value": "#1F2A30", "type": "color", "layer": "A1", "desc": "主文本 14.9:1" },
+      "2": { "value": "#4A5A64", "type": "color", "layer": "B", "desc": "次级文本 7.2:1" },
+      "muted": { "value": "#65747C", "type": "color", "layer": "A1", "desc": "元数据/占位 4.84:1" },
+      "disabled": { "value": "#A7B2B8", "type": "color", "layer": "C" }
+    },
+    "accent": {
+      "default": { "value": "#12B5A6", "type": "color", "layer": "A1", "desc": "品牌薄荷青：仅填充/大图标/深底，禁白底小字" },
+      "strong": { "value": "#0B7E73", "type": "color", "layer": "A2", "desc": "可交互色：链接/白底图标/聚焦环/激活导航 4.95:1(白字)" },
+      "soft": { "value": "#E3F7F3", "type": "color", "layer": "A2", "desc": "激活导航底/选中行底/callout 底" },
+      "ink": { "value": "#064E47", "type": "color", "layer": "C", "desc": "accent-soft 之上文字 8.6:1" },
+      "on": { "value": "#FFFFFF", "type": "color", "layer": "A2", "desc": "仅用于 accent-strong 实心底文字" }
+    },
+    "cta": {
+      "default": { "value": "#FF9A3D", "type": "color", "layer": "A2", "desc": "主提交按钮背景" },
+      "ink": { "value": "#2B2A33", "type": "color", "layer": "A2", "desc": "主按钮文字 6.7:1" },
+      "hover": { "value": "#F2740E", "type": "color", "layer": "A2" },
+      "active": { "value": "#DC6408", "type": "color", "layer": "C" }
+    },
+    "semantic": {
+      "success": { "value": "#1E8E5A", "type": "color", "layer": "A2" },
+      "successInk": { "value": "#146C46", "type": "color", "layer": "C", "desc": "5.69:1" },
+      "successSoft": { "value": "#E4F5EC", "type": "color", "layer": "C" },
+      "warn": { "value": "#B26B00", "type": "color", "layer": "A2" },
+      "warnInk": { "value": "#9A5B00", "type": "color", "layer": "C", "desc": "4.93:1" },
+      "warnSoft": { "value": "#FDF3E2", "type": "color", "layer": "C" },
+      "danger": { "value": "#D8403A", "type": "color", "layer": "A2" },
+      "dangerInk": { "value": "#B4322C", "type": "color", "layer": "C", "desc": "5.30:1" },
+      "dangerSoft": { "value": "#FCEBE9", "type": "color", "layer": "C" },
+      "info": { "value": "#1D6FD6", "type": "color", "layer": "A2" },
+      "infoInk": { "value": "#1A5FB4", "type": "color", "layer": "C", "desc": "5.47:1" },
+      "infoSoft": { "value": "#E7F0FC", "type": "color", "layer": "C" }
+    }
+  },
+  "contentStatus": {
+    "draft": { "label": "草稿", "bg": "#EEF1F4", "fg": "#55636B", "dot": "#8A99A1", "border": "#DCE3E7", "icon": "PencilSimpleLine", "desc": "App 端不可见" },
+    "in_review": { "label": "待审", "bg": "#FDF3E2", "fg": "#9A5B00", "dot": "#F2A33C", "border": "#F5E2C0", "icon": "ClockCountdown", "desc": "App 端不可见" },
+    "published": { "label": "已发布", "bg": "#E4F5EC", "fg": "#146C46", "dot": "#1E8E5A", "border": "#C7E9D6", "icon": "SealCheck", "desc": "App 可见" },
+    "archived": { "label": "已归档", "bg": "#ECEFF1", "fg": "#55636B", "dot": "#9AA7AE", "border": "#DDE3E6", "icon": "Archive", "desc": "App 不可见" }
+  },
+  "font": {
+    "family": {
+      "display": { "value": "Inter, \"Noto Sans SC\", -apple-system, \"Segoe UI\", sans-serif", "type": "fontFamily", "layer": "A1" },
+      "body": { "value": "Inter, \"Noto Sans SC\", -apple-system, \"Segoe UI\", sans-serif", "type": "fontFamily", "layer": "A1" },
+      "mono": { "value": "JetBrains Mono, \"SFMono-Regular\", Menlo, monospace", "type": "fontFamily", "layer": "A2" }
+    },
+    "size": {
+      "xs": { "value": "12px", "lineHeight": "16px", "weight": 500, "type": "dimension" },
+      "sm": { "value": "13px", "lineHeight": "18px", "weight": 400, "type": "dimension" },
+      "base": { "value": "14px", "lineHeight": "20px", "weight": 400, "type": "dimension" },
+      "md": { "value": "15px", "lineHeight": "22px", "weight": 500, "type": "dimension" },
+      "lg": { "value": "16px", "lineHeight": "24px", "weight": 590, "type": "dimension" },
+      "xl": { "value": "20px", "lineHeight": "28px", "weight": 590, "type": "dimension" },
+      "2xl": { "value": "24px", "lineHeight": "32px", "weight": 590, "type": "dimension" },
+      "3xl": { "value": "28px", "lineHeight": "36px", "weight": 590, "type": "dimension" }
+    },
+    "weight": {
+      "read": { "value": "400", "type": "fontWeight" },
+      "emphasize": { "value": "500", "type": "fontWeight" },
+      "announce": { "value": "590", "type": "fontWeight" }
+    },
+    "tracking": {
+      "body": { "value": "0", "type": "letterSpacing" },
+      "small": { "value": "0.01em", "type": "letterSpacing" },
+      "caps": { "value": "0.06em", "type": "letterSpacing" },
+      "title": { "value": "-0.01em", "type": "letterSpacing" },
+      "stat": { "value": "-0.015em", "type": "letterSpacing" }
+    }
+  },
+  "space": {
+    "1": { "value": "4px", "type": "dimension" },
+    "2": { "value": "8px", "type": "dimension" },
+    "3": { "value": "12px", "type": "dimension" },
+    "4": { "value": "16px", "type": "dimension" },
+    "5": { "value": "20px", "type": "dimension" },
+    "6": { "value": "24px", "type": "dimension" },
+    "8": { "value": "32px", "type": "dimension" },
+    "10": { "value": "40px", "type": "dimension" },
+    "12": { "value": "48px", "type": "dimension" },
+    "16": { "value": "64px", "type": "dimension" }
+  },
+  "radius": {
+    "xs": { "value": "4px", "type": "dimension", "desc": "徽章/tag" },
+    "sm": { "value": "6px", "type": "dimension", "desc": "按钮/输入框" },
+    "md": { "value": "8px", "type": "dimension", "desc": "卡片/面板/导航项" },
+    "lg": { "value": "12px", "type": "dimension", "desc": "弹窗/抽屉（卡片上限）" },
+    "pill": { "value": "9999px", "type": "dimension", "desc": "头像/圆点/分段控件" }
+  },
+  "elevation": {
+    "flat": { "value": "none", "type": "boxShadow" },
+    "ring": { "value": "0 0 0 1px var(--border)", "type": "boxShadow", "desc": "卡片/面板（边框环，非模糊）" },
+    "raised": { "value": "0 1px 2px rgba(16,24,40,0.04), 0 4px 12px rgba(16,24,40,0.06)", "type": "boxShadow", "desc": "下拉/悬浮卡" },
+    "overlay": { "value": "0 12px 32px rgba(16,24,40,0.14)", "type": "boxShadow", "desc": "模态/抽屉" }
+  },
+  "focus": {
+    "ring": { "value": "0 0 0 2px var(--bg), 0 0 0 4px color-mix(in srgb, var(--accent-strong) 45%, transparent)", "type": "boxShadow" },
+    "color": { "value": "var(--accent-strong)", "type": "color" }
+  },
+  "motion": {
+    "instant": { "value": "80ms", "type": "duration" },
+    "fast": { "value": "120ms", "type": "duration" },
+    "base": { "value": "160ms", "type": "duration" },
+    "slow": { "value": "240ms", "type": "duration" },
+    "easeStandard": { "value": "cubic-bezier(0.2, 0, 0, 1)", "type": "cubicBezier" },
+    "easeExit": { "value": "cubic-bezier(0.4, 0, 1, 1)", "type": "cubicBezier" }
+  },
+  "layout": {
+    "sidebarW": { "value": "240px", "type": "dimension" },
+    "sidebarWCollapsed": { "value": "64px", "type": "dimension" },
+    "topbarH": { "value": "56px", "type": "dimension" },
+    "breadcrumbH": { "value": "40px", "type": "dimension" },
+    "contentMax": { "value": "1440px", "type": "dimension" },
+    "contentGutter": { "value": "24px", "type": "dimension" },
+    "sectionY": { "value": "24px", "type": "dimension" }
+  },
+  "table": {
+    "rowH": { "value": "44px", "type": "dimension" },
+    "rowHCompact": { "value": "40px", "type": "dimension" },
+    "rowHComfortable": { "value": "52px", "type": "dimension" },
+    "headerH": { "value": "40px", "type": "dimension" },
+    "cellX": { "value": "12px", "type": "dimension" },
+    "cellY": { "value": "10px", "type": "dimension" },
+    "zebra": { "value": "var(--surface-sunken)", "type": "color" },
+    "hover": { "value": "var(--surface-hover)", "type": "color" },
+    "selected": { "value": "var(--accent-soft)", "type": "color" },
+    "divider": { "value": "var(--border-soft)", "type": "color" }
+  },
+  "breakpoints": {
+    "sm": { "value": "640px", "type": "dimension" },
+    "md": { "value": "768px", "type": "dimension" },
+    "lg": { "value": "1024px", "type": "dimension" },
+    "xl": { "value": "1280px", "type": "dimension" }
+  }
+}

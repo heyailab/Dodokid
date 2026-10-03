@@ -1,0 +1,2380 @@
+openapi: 3.0.3
+info:
+  title: DodoKid API
+  description: >
+    Backend API for DodoKid, a children's early-education app.
+    Implements a dual-role model (verified parent <-> child profile created only
+    after guardian consent), data minimization, and a unified response contract.
+
+    v1.1.0 additions (Spec v0.2 section 5.2): a separate operations-console surface
+    under /api/v1/admin/* protected by admin JWT (audience: admin) + RBAC roles
+    (editor / admin). Rules locked by Spec section 14.5:
+
+    - Admin auth is independent from parent auth: admin tokens carry audience
+      "admin"; parent tokens carry audience "app". A parent token can never
+      access /admin/* endpoints and vice versa.
+    - All /admin/* endpoints (except login) require adminBearerAuth + RBAC.
+    - Admin endpoints never return child-identifiable information; stats are aggregated.
+    - Media upload: POST /admin/media issues temporary cloud-storage credentials
+      scoped to a single object path; the admin frontend uploads the file directly
+      to storage; the backend only persists media metadata (media_assets).
+
+    Unified response envelope: { success, code, message, data }.
+    code = 0 means success; non-zero error codes: 40000 validation, 40100 unauthorized,
+    40300 forbidden (RBAC), 40400 not found, 40900 conflict (state/version), 42900 rate limited.
+
+    v1.2.1 additions (P2-2 fix, sample chapters configurable): content_items
+    gains an "isSample" boolean (default false, admin-only writable - editors
+    submitting it receive 40300); a new C-end endpoint GET /content/samples
+    returns up to 10 published sample chapters filtered by ageGroup.
+
+    v1.2.0 additions (design contract 3.4d, approved): /admin/contents/{id}/publish
+    (draft -> published, admin only), /admin/contents/{id}/withdraw
+    (in_review -> draft, editor+, no revision snapshot), /admin/contents/{id}/duplicate
+    (copy as new draft, editor+).
+  version: 1.2.1
+servers:
+  - url: https://{env}.api.tcb-api.com/api/v1
+    description: CloudBase HTTP cloud function (production)
+    variables:
+      env:
+        default: dodokid-env
+  - url: http://localhost:3000/api/v1
+    description: Local development
+security:
+  - bearerAuth: []
+paths:
+  # ------------------------------------------------------------------ Parent (C-end)
+  /parent/sendSmsCode:
+    post:
+      summary: Send an SMS verification code
+      operationId: sendSmsCode
+      tags: [Parent]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone]
+              properties:
+                phone:
+                  type: string
+                  example: "13800138000"
+      responses:
+        '200':
+          description: Code sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+        '400':
+          $ref: '#/components/responses/Error'
+        '429':
+          $ref: '#/components/responses/Error'
+  /parent/verifyCode:
+    post:
+      summary: Verify an SMS code (standalone check)
+      operationId: verifyCode
+      tags: [Parent]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, code]
+              properties:
+                phone: { type: string }
+                code: { type: string }
+      responses:
+        '200':
+          description: Verified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+        '400':
+          $ref: '#/components/responses/Error'
+  /parent/register:
+    post:
+      summary: Register a parent with phone + SMS code
+      operationId: register
+      tags: [Parent]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, code]
+              properties:
+                phone: { type: string }
+                code: { type: string }
+      responses:
+        '200':
+          description: Registered
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          user: { $ref: '#/components/schemas/PublicUser' }
+                          tokens: { $ref: '#/components/schemas/AuthTokens' }
+        '409':
+          $ref: '#/components/responses/Error'
+  /parent/login:
+    post:
+      summary: Login a parent with phone + SMS code
+      operationId: login
+      tags: [Parent]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, code]
+              properties:
+                phone: { type: string }
+                code: { type: string }
+      responses:
+        '200':
+          description: Logged in
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          user: { $ref: '#/components/schemas/PublicUser' }
+                          tokens: { $ref: '#/components/schemas/AuthTokens' }
+        '409':
+          $ref: '#/components/responses/Error'
+  /parent/logout:
+    post:
+      summary: Revoke the current access token
+      operationId: logout
+      tags: [Parent]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+  /parent/gate/setup:
+    post:
+      summary: Set up the parent gate (password or biometric attestation)
+      operationId: gateSetup
+      tags: [Parent, Gate]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, secret]
+              properties:
+                type:
+                  type: string
+                  enum: [password, biometric]
+                secret:
+                  type: string
+                  minLength: 4
+      responses:
+        '200':
+          description: Gate configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+  /parent/gate/verify:
+    post:
+      summary: Verify the parent gate to obtain a short-lived gate token
+      operationId: gateVerify
+      tags: [Parent, Gate]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [secret]
+              properties:
+                type:
+                  type: string
+                  enum: [password, biometric]
+                secret: { type: string }
+      responses:
+        '200':
+          description: Verified, returns gate token
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          gateToken: { type: string }
+                          expiresInSec: { type: integer }
+        '403':
+          $ref: '#/components/responses/Error'
+  /parent/settings:
+    get:
+      summary: Get parental settings (requires parent gate)
+      operationId: getSettings
+      tags: [Parent, Settings]
+      security:
+        - bearerAuth: []
+        - gateToken: []
+      responses:
+        '200':
+          description: Settings
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ParentalSettings' }
+        '403':
+          $ref: '#/components/responses/Error'
+  /parent/settings/timeLimit:
+    put:
+      summary: Update daily screen-time limit and mode (requires parent gate)
+      operationId: setTimeLimit
+      tags: [Parent, Settings]
+      security:
+        - bearerAuth: []
+        - gateToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dailyLimitMin]
+              properties:
+                dailyLimitMin:
+                  type: integer
+                  minimum: 0
+                  maximum: 1440
+                mode:
+                  type: string
+                  enum: [strict, balanced, free]
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ParentalSettings' }
+        '403':
+          $ref: '#/components/responses/Error'
+  /child/create:
+    post:
+      summary: Create a child profile (requires a prior consent record)
+      operationId: createChild
+      tags: [Child]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [consentId, name, ageGroup]
+              properties:
+                consentId: { type: string }
+                name: { type: string, maxLength: 40 }
+                ageGroup:
+                  type: string
+                  enum: ['3-4', '4-6']
+                avatar: { type: string, nullable: true }
+      responses:
+        '200':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ChildProfile' }
+        '400':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+  /child/switch:
+    post:
+      summary: Switch the active child profile (client selection)
+      operationId: switchChild
+      tags: [Child]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [childId]
+              properties:
+                childId: { type: string }
+      responses:
+        '200':
+          description: Switched
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ChildProfile' }
+  /child/list:
+    get:
+      summary: List child profiles for the current parent
+      operationId: listChildren
+      tags: [Child]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/ChildProfile' }
+  /child/{id}:
+    get:
+      summary: Get a single child profile
+      operationId: getChild
+      tags: [Child]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Profile
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ChildProfile' }
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+    put:
+      summary: Update a child profile (name/avatar/ageGroup only)
+      operationId: updateChild
+      tags: [Child]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 40 }
+                avatar: { type: string, nullable: true }
+                ageGroup:
+                  type: string
+                  enum: ['3-4', '4-6']
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ChildProfile' }
+    delete:
+      summary: Delete a child profile and all related data (consent revocation)
+      operationId: deleteChild
+      tags: [Child]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: revoke
+          in: query
+          required: false
+          schema: { type: string, enum: ['true', 'false'] }
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+        '403':
+          $ref: '#/components/responses/Error'
+  /content/list:
+    get:
+      summary: List content items, routed by moduleKey and ageGroup (published only)
+      description: >
+        Returns only items with status=published (Spec AC-13 / AC-15). Items that
+        are draft, in_review or archived are never visible here.
+      operationId: listContent
+      tags: [Content]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: moduleKey
+          in: query
+          required: false
+          schema: { type: string }
+        - name: ageGroup
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ['3-4', '4-6']
+      responses:
+        '200':
+          description: Items
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/ContentItem' }
+  /content/samples:
+    get:
+      summary: List sample chapters (published AND isSample, up to 10)
+      description: >
+        v1.2.1: replaces the hardcoded sample ids in the child app home screen.
+        Returns items with status=published AND isSample=true, ordered by order
+        ascending, limited to 10. ageGroup accepts one value or a comma-separated
+        list (OR semantics); when omitted, samples from all age groups are
+        returned. isSample can only be set via the admin API by admins.
+      operationId: listSampleContent
+      tags: [Content]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: ageGroup
+          in: query
+          required: false
+          description: Single value or comma-separated list, e.g. "3-4,4-6"
+          schema: { type: string }
+      responses:
+        '200':
+          description: Sample items
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            maxItems: 10
+                            items: { $ref: '#/components/schemas/ContentItem' }
+  /content/search:
+    get:
+      summary: Search content items by title (published only)
+      operationId: searchContent
+      tags: [Content]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Matches
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/ContentItem' }
+  /content/categories:
+    get:
+      summary: List content modules (categories)
+      description: Returns only enabled modules with iconKey/order for app rendering.
+      operationId: listCategories
+      tags: [Content]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Modules
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/ContentModule' }
+  /content/{id}:
+    get:
+      summary: Get a content item with its media assets
+      operationId: getContentItem
+      tags: [Content]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Item + media
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          item: { $ref: '#/components/schemas/ContentItem' }
+                          media:
+                            type: array
+                            items: { $ref: '#/components/schemas/MediaAsset' }
+        '404':
+          $ref: '#/components/responses/Error'
+  /content/{id}/mediaUrl:
+    get:
+      summary: Get a signed/temporary CDN URL for a media asset
+      operationId: getMediaUrl
+      tags: [Content]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: mediaAssetId
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: Signed URL
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          url: { type: string }
+                          expiresAt: { type: string, nullable: true }
+        '404':
+          $ref: '#/components/responses/Error'
+  /progress/{childId}:
+    get:
+      summary: Get progress summary for a child
+      operationId: getProgress
+      tags: [Progress]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: childId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Summary
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ProgressSummary' }
+        '403':
+          $ref: '#/components/responses/Error'
+    put:
+      summary: Upsert a progress record for a child
+      operationId: upsertProgress
+      tags: [Progress]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: childId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [itemId, status]
+              properties:
+                itemId: { type: string }
+                status:
+                  type: string
+                  enum: [not_started, in_progress, completed]
+                score:
+                  type: number
+                  minimum: 0
+                  maximum: 100
+      responses:
+        '200':
+          description: Upserted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ProgressRecord' }
+  /progress/{childId}/list:
+    get:
+      summary: List all progress records for a child
+      operationId: listProgress
+      tags: [Progress]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: childId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Records
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/ProgressRecord' }
+  /milestones/{childId}:
+    get:
+      summary: List earned milestones for a child
+      operationId: listMilestones
+      tags: [Milestones]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: childId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Milestones
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Milestone' }
+  /consent/record:
+    post:
+      summary: Record a guardian consent
+      operationId: recordConsent
+      tags: [Consent]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, method]
+              properties:
+                childId: { type: string, nullable: true }
+                type: { type: string }
+                method: { type: string }
+      responses:
+        '200':
+          description: Recorded
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          consentId: { type: string }
+                          status: { type: string }
+  /preferences:
+    put:
+      summary: Update user preferences
+      operationId: updatePreferences
+      tags: [Preferences]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lang:
+                  type: string
+                  enum: ['zh-CN', 'en', 'zh-TW']
+                theme:
+                  type: string
+                  enum: [light, dark, system]
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Preferences' }
+  /feedback:
+    post:
+      summary: Submit user feedback
+      operationId: submitFeedback
+      tags: [Feedback]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  maxLength: 1000
+      responses:
+        '200':
+          description: Submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+  /version:
+    get:
+      summary: Get the app/build version
+      operationId: getVersion
+      tags: [Meta]
+      responses:
+        '200':
+          description: Version
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/VersionInfo' }
+  /privacyPolicy:
+    get:
+      summary: Get the privacy policy reference
+      operationId: getPrivacyPolicy
+      tags: [Meta]
+      responses:
+        '200':
+          description: Policy
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PrivacyPolicy' }
+
+  # ------------------------------------------------------------------ Admin (operations console)
+  /admin/auth/login:
+    post:
+      summary: Admin console login (account + password)
+      description: >
+        Independent from parent login (Spec 14.5). Issues a JWT with audience
+        "admin". Requires role in {editor, admin} and status=active.
+        Writes audit event admin.auth.login.
+      operationId: adminLogin
+      tags: [AdminAuth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [account, password]
+              properties:
+                account:
+                  type: string
+                  description: Phone number of the ops user
+                password: { type: string, minLength: 8 }
+      responses:
+        '200':
+          description: Logged in
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          user: { $ref: '#/components/schemas/AdminUser' }
+                          tokens: { $ref: '#/components/schemas/AuthTokens' }
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+  /admin/auth/logout:
+    post:
+      summary: Revoke the current admin access token
+      operationId: adminLogout
+      tags: [AdminAuth]
+      security:
+        - adminBearerAuth: []
+      responses:
+        '200':
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+  /admin/auth/me:
+    get:
+      summary: Current ops identity and permission level
+      operationId: adminMe
+      tags: [AdminAuth]
+      security:
+        - adminBearerAuth: []
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminUser' }
+        '401':
+          $ref: '#/components/responses/Error'
+  /admin/stats:
+    get:
+      summary: Dashboard overview (aggregated, no child-identifiable data)
+      operationId: adminStats
+      tags: [AdminStats]
+      security:
+        - adminBearerAuth: []
+      responses:
+        '200':
+          description: Stats
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminStats' }
+        '401':
+          $ref: '#/components/responses/Error'
+  /admin/contents:
+    get:
+      summary: List content items (admin view, all statuses)
+      operationId: adminListContents
+      tags: [AdminContent]
+      security:
+        - adminBearerAuth: []
+      parameters:
+        - { name: moduleKey, in: query, required: false, schema: { type: string } }
+        - { name: type, in: query, required: false, schema: { type: string, enum: [book, song, habit] } }
+        - { name: ageGroup, in: query, required: false, schema: { type: string, enum: ['3-4', '4-6'] } }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [draft, in_review, published, archived] } }
+        - { name: q, in: query, required: false, schema: { type: string }, description: Title keyword }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: sort, in: query, required: false, schema: { type: string, enum: [updatedAt, createdAt, title, order], default: updatedAt } }
+        - { name: order, in: query, required: false, schema: { type: string, enum: [asc, desc], default: desc } }
+      responses:
+        '200':
+          description: Paged content list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/AdminContent' }
+                          meta: { $ref: '#/components/schemas/PageMeta' }
+        '401':
+          $ref: '#/components/responses/Error'
+    post:
+      summary: Create a content item (enters status=draft)
+      operationId: adminCreateContent
+      tags: [AdminContent]
+      security:
+        - adminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContentCreate' }
+      responses:
+        '200':
+          description: Created draft
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminContent' }
+        '400':
+          $ref: '#/components/responses/Error'
+        '401':
+          $ref: '#/components/responses/Error'
+  /admin/contents/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Get a content item with attached media
+      operationId: adminGetContent
+      tags: [AdminContent]
+      security:
+        - adminBearerAuth: []
+      responses:
+        '200':
+          description: Item + media
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          item: { $ref: '#/components/schemas/AdminContent' }
+                          media:
+                            type: array
+                            items: { $ref: '#/components/schemas/AdminMediaAsset' }
+        '404':
+          $ref: '#/components/responses/Error'
+    put:
+      summary: Update a content item (optimistic locking)
+      description: >
+        Requires expectedVersion (conflict -> 409). Editing an item whose status
+        is archived transitions it back to draft (re-edit, Spec 14.2). Items in
+        status in_review are read-only here (409) until rejected or archived.
+        Writes audit event admin.content.update.
+      operationId: adminUpdateContent
+      tags: [AdminContent]
+      security:
+        - adminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContentUpdate' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminContent' }
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+    delete:
+      summary: Delete a content item (admin only)
+      description: Hard delete; writes audit event admin.content.delete. editor receives 403 (AC-11).
+      operationId: adminDeleteContent
+      tags: [AdminContent]
+      security:
+        - adminBearerAuth: []
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+  /admin/contents/{id}/submit:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Submit for review (draft -> in_review)
+      description: >
+        Allowed from draft. Writes a content_revisions snapshot (AC-09) and
+        audit event admin.content.submit. Any editor+ may submit their own
+        or any draft.
+      operationId: adminSubmitContent
+      tags: [AdminContent]
+      security:
+        - adminBearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: Submitted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminContent' }
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+  /admin/contents/{id}/approve:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Approve and publish (in_review -> published, admin only)
+      description: >
+        Sets publishedAt, writes a published revision snapshot and audit event
+        admin.content.approve. After this the item appears in C-end
+        /content/list (AC-10). editor receives 403.
+      operationId: adminApproveContent
+      tags: [AdminContent]
+      security:
+        - adminBearerAuth: []
+      responses:
+        '200':
+          description: Published
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminContent' }
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+  /admin/contents/{id}/reject:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Reject review (in_review -> draft, admin only)
+      description: Requires a reason; the reason is stored on the revision and audit event admin.content.reject.
+      operationId: adminRejectContent
+      tags: [AdminContent]
+      security:
+        - adminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        '200':
+          description: Rejected back to draft
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminContent' }
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+  /admin/contents/{id}/unpublish:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Take down (published -> archived, admin only)
+      description: >
+        Immediately hides the item from C-end /content/list (AC-13). Writes
+        audit event admin.content.unpublish. editor receives 403.
+      operationId: adminUnpublishContent
+      tags: [AdminContent]
+      security:
+        - adminBearerAuth: []
+      responses:
+        '200':
+          description: Unpublished
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminContent' }
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+  /admin/contents/{id}/archive:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Archive (draft/in_review/published -> archived, admin only)
+      description: >
+        Withdraws an item from any active status into archived. Archived items
+        can be re-edited (PUT) which returns them to draft. Writes audit event
+        admin.content.archive. editor receives 403.
+      operationId: adminArchiveContent
+      tags: [AdminContent]
+      security:
+        - adminBearerAuth: []
+      responses:
+        '200':
+          description: Archived
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminContent' }
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+  /admin/contents/{id}/publish:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Publish directly from draft (draft -> published, admin only)
+      description: >
+        Approved change (design contract 3.4d): skips the review step for
+        trusted content. Only valid from draft (409 otherwise). Requires the
+        optimistic lock via the optional expectedVersion body field (409 on
+        mismatch). Behaves like approve otherwise: sets publishedAt, writes a
+        revision snapshot (action=publish), the item becomes visible in C-end
+        /content/list (AC-10), and writes audit event admin.content.publish.
+      operationId: adminPublishContent
+      tags: [AdminContent]
+      security:
+        - adminBearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expectedVersion:
+                  type: integer
+                  description: Optimistic lock; 409 when it does not match current version
+      responses:
+        '200':
+          description: Published
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminContent' }
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+  /admin/contents/{id}/withdraw:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Withdraw from review (in_review -> draft, editor+)
+      description: >
+        Approved change (design contract 3.4d): the submitting editor (or any
+        admin) pulls an item back from the review queue. Semantics is "recall
+        pending review": the item returns to draft WITHOUT a new revision
+        snapshot (editing will be re-submitted later, which snapshots again).
+        reviewerId is cleared. Writes audit event admin.content.withdraw.
+        Non-in_review items return 409.
+      operationId: adminWithdrawContent
+      tags: [AdminContent]
+      security:
+        - adminBearerAuth: []
+      responses:
+        '200':
+          description: Withdrawn to draft
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminContent' }
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+  /admin/contents/{id}/duplicate:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Duplicate an item as a new draft (editor+, source any status)
+      description: >
+        Approved change (design contract 3.4d): copies any item (any status)
+        into a NEW content item with status=draft, version=1, publishedAt=null.
+        The source item is never modified. The duplicate title defaults to
+        "{source.title} (副本)" unless overridden in the body. Audit event
+        admin.content.duplicate (targetId = new item, after.sourceId = source id).
+      operationId: adminDuplicateContent
+      tags: [AdminContent]
+      security:
+        - adminBearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string, maxLength: 80, description: Override title of the duplicate }
+      responses:
+        '200':
+          description: New draft created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminContent' }
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+  /admin/contents/{id}/revisions:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Revision history (newest first, snapshot excluded)
+      operationId: adminListRevisions
+      tags: [AdminContent]
+      security:
+        - adminBearerAuth: []
+      parameters:
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200':
+          description: Revisions
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/ContentRevision' }
+                          meta: { $ref: '#/components/schemas/PageMeta' }
+        '404':
+          $ref: '#/components/responses/Error'
+  /admin/contents/{id}/restore/{revisionId}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+      - { name: revisionId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Roll back to a revision (admin only)
+      description: >
+        Forward-only rollback: the snapshot of the target revision becomes the
+        new working copy, version increments by 1, status becomes draft, and a
+        new revision (action=restore) is written. History is never rewritten.
+        Audit event admin.content.restore.
+      operationId: adminRestoreRevision
+      tags: [AdminContent]
+      security:
+        - adminBearerAuth: []
+      responses:
+        '200':
+          description: Restored to draft
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminContent' }
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+  /admin/contents/{id}/preview:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Preview as the C-end would render it
+      description: >
+        Returns the payload shape of C-end /content/{id} (ContentItem + MediaAsset)
+        for any status, so editors verify content before publishing. Never exposed to C-end.
+      operationId: adminPreviewContent
+      tags: [AdminContent]
+      security:
+        - adminBearerAuth: []
+      responses:
+        '200':
+          description: C-end shaped preview
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          item: { $ref: '#/components/schemas/ContentItem' }
+                          media:
+                            type: array
+                            items: { $ref: '#/components/schemas/MediaAsset' }
+        '404':
+          $ref: '#/components/responses/Error'
+  /admin/modules:
+    get:
+      summary: List modules (all, including disabled)
+      operationId: adminListModules
+      tags: [AdminCatalog]
+      security:
+        - adminBearerAuth: []
+      responses:
+        '200':
+          description: Modules
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/AdminModule' }
+    post:
+      summary: Create a module (admin only)
+      description: Writes audit event. editor receives 403.
+      operationId: adminCreateModule
+      tags: [AdminCatalog]
+      security:
+        - adminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModuleUpsert' }
+      responses:
+        '200':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminModule' }
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+  /admin/modules/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    put:
+      summary: Update a module (admin only)
+      operationId: adminUpdateModule
+      tags: [AdminCatalog]
+      security:
+        - adminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModuleUpsert' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminModule' }
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+    delete:
+      summary: Delete a module (admin only)
+      description: Rejected with 409 if published content still references the module.
+      operationId: adminDeleteModule
+      tags: [AdminCatalog]
+      security:
+        - adminBearerAuth: []
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+  /admin/categories:
+    get:
+      summary: List content categories
+      operationId: adminListCategories
+      tags: [AdminCatalog]
+      security:
+        - adminBearerAuth: []
+      responses:
+        '200':
+          description: Categories
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/ContentCategory' }
+    post:
+      summary: Create a category (admin only)
+      operationId: adminCreateCategory
+      tags: [AdminCatalog]
+      security:
+        - adminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CategoryUpsert' }
+      responses:
+        '200':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ContentCategory' }
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+  /admin/categories/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    put:
+      summary: Update a category (admin only)
+      operationId: adminUpdateCategory
+      tags: [AdminCatalog]
+      security:
+        - adminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CategoryUpsert' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ContentCategory' }
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+    delete:
+      summary: Delete a category (admin only)
+      operationId: adminDeleteCategory
+      tags: [AdminCatalog]
+      security:
+        - adminBearerAuth: []
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+  /admin/media:
+    get:
+      summary: List media assets
+      operationId: adminListMedia
+      tags: [AdminMedia]
+      security:
+        - adminBearerAuth: []
+      parameters:
+        - { name: folder, in: query, required: false, schema: { type: string } }
+        - { name: itemId, in: query, required: false, schema: { type: string } }
+        - { name: mime, in: query, required: false, schema: { type: string } }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200':
+          description: Paged media list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/AdminMediaAsset' }
+                          meta: { $ref: '#/components/schemas/PageMeta' }
+    post:
+      summary: Issue direct-upload credentials and persist media metadata
+      description: >
+        One call does both halves of the upload flow (Spec 14.5 "temporary
+        cloud-storage credentials, frontend direct upload, backend only stores
+        metadata"): validates the declared metadata, creates the media_assets
+        record, and returns temporary COS/CloudBase storage credentials scoped
+        to a single object path (cdnKey). The admin frontend uploads the file
+        directly with those credentials. If the upload is aborted, the record
+        can be cleaned up via DELETE /admin/media/{id}. Writes audit event
+        admin.media.upload.
+      operationId: adminUploadMedia
+      tags: [AdminMedia]
+      security:
+        - adminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MediaUploadRequest' }
+      responses:
+        '200':
+          description: Credentials + persisted metadata
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/MediaUploadResult' }
+        '400':
+          $ref: '#/components/responses/Error'
+        '401':
+          $ref: '#/components/responses/Error'
+  /admin/media/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Get a media asset
+      operationId: adminGetMedia
+      tags: [AdminMedia]
+      security:
+        - adminBearerAuth: []
+      responses:
+        '200':
+          description: Asset
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminMediaAsset' }
+        '404':
+          $ref: '#/components/responses/Error'
+    delete:
+      summary: Delete a media asset (admin only)
+      description: Rejected with 409 if the asset is still referenced by published content. Audit event admin.media.delete.
+      operationId: adminDeleteMedia
+      tags: [AdminMedia]
+      security:
+        - adminBearerAuth: []
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+  /admin/users:
+    get:
+      summary: List operations users (role in editor/admin; parents excluded)
+      description: Never returns child data. Phone numbers are masked.
+      operationId: adminListUsers
+      tags: [AdminUser]
+      security:
+        - adminBearerAuth: []
+      parameters:
+        - { name: role, in: query, required: false, schema: { type: string, enum: [editor, admin] } }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [active, disabled] } }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200':
+          description: Paged user list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/AdminUser' }
+                          meta: { $ref: '#/components/schemas/PageMeta' }
+        '403':
+          $ref: '#/components/responses/Error'
+  /admin/users/{id}/role:
+    put:
+      summary: Change an operations user role (admin only)
+      description: Only editor <-> admin transitions allowed. Audit event admin.user.role_change with before/after.
+      operationId: adminChangeUserRole
+      tags: [AdminUser]
+      security:
+        - adminBearerAuth: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:
+                  type: string
+                  enum: [editor, admin]
+      responses:
+        '200':
+          description: Role changed
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminUser' }
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+  /admin/users/{id}/status:
+    put:
+      summary: Enable or disable an operations user (admin only)
+      description: A disabled user's tokens stop passing adminAuth immediately. Audit event admin.user.status_change.
+      operationId: adminChangeUserStatus
+      tags: [AdminUser]
+      security:
+        - adminBearerAuth: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [active, disabled]
+      responses:
+        '200':
+          description: Status changed
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminUser' }
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+  /admin/audit:
+    get:
+      summary: Query audit log (admin only)
+      operationId: adminListAudit
+      tags: [AdminAudit]
+      security:
+        - adminBearerAuth: []
+      parameters:
+        - { name: actor, in: query, required: false, schema: { type: string } }
+        - { name: action, in: query, required: false, schema: { type: string }, description: e.g. admin.content.approve }
+        - { name: targetType, in: query, required: false, schema: { type: string } }
+        - { name: targetId, in: query, required: false, schema: { type: string } }
+        - { name: from, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: to, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200':
+          description: Paged audit entries
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/AuditEntry' }
+                          meta: { $ref: '#/components/schemas/PageMeta' }
+        '403':
+          $ref: '#/components/responses/Error'
+  /admin/settings:
+    get:
+      summary: Get console settings (admin only)
+      operationId: adminGetSettings
+      tags: [AdminSettings]
+      security:
+        - adminBearerAuth: []
+      responses:
+        '200':
+          description: Settings
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminSettings' }
+        '403':
+          $ref: '#/components/responses/Error'
+    put:
+      summary: Update console settings (admin only)
+      operationId: adminUpdateSettings
+      tags: [AdminSettings]
+      security:
+        - adminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminSettings' }
+      responses:
+        '200':
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminSettings' }
+        '403':
+          $ref: '#/components/responses/Error'
+        '400':
+          $ref: '#/components/responses/Error'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Parent/child-app token, JWT audience "app".
+    adminBearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Operations-console token, JWT audience "admin". Verified by the
+        adminAuth middleware: audience must be "admin", role must be editor
+        or admin, user status must be active. Independent from bearerAuth
+        (ADR-005).
+    gateToken:
+      type: apiKey
+      in: header
+      name: X-Gate-Token
+  responses:
+    Error:
+      description: Unified error response
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    Success:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        code: { type: integer, example: 0 }
+        message: { type: string, example: ok }
+        data: {}
+    ErrorResponse:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        code:
+          type: integer
+          description: |
+            40000 validation | 40100 unauthorized | 40300 forbidden (RBAC) |
+            40400 not found | 40900 conflict (state machine / version) | 42900 rate limited
+          example: 40100
+        message: { type: string, example: Unauthorized }
+        data: { nullable: true }
+    PageMeta:
+      type: object
+      properties:
+        total: { type: integer }
+        page: { type: integer }
+        limit: { type: integer }
+        hasMore: { type: boolean }
+    AuthTokens:
+      type: object
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+    PublicUser:
+      type: object
+      properties:
+        id: { type: string }
+        phone: { type: string, example: "138****8000" }
+        role: { type: string, example: parent }
+        createdAt: { type: string, format: date-time }
+    ChildProfile:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        ageGroup:
+          type: string
+          enum: ['3-4', '4-6']
+        avatar: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+    ContentModule:
+      type: object
+      properties:
+        _id: { type: string }
+        key: { type: string }
+        name: { type: string }
+        colorToken: { type: string }
+        iconKey: { type: string, description: Phosphor icon name, e.g. BookOpen }
+        order: { type: integer }
+        enabled: { type: boolean }
+    ContentItem:
+      type: object
+      properties:
+        _id: { type: string }
+        moduleKey: { type: string }
+        ageGroup:
+          type: string
+          enum: ['3-4', '4-6']
+        title: { type: string }
+        summary: { type: string, nullable: true }
+        cover: { type: string, nullable: true }
+        mediaRef: { type: string }
+        type: { type: string, enum: [book, song, habit] }
+        tags:
+          type: array
+          items: { type: string }
+        order: { type: integer }
+        locale: { type: string, example: zh-CN }
+    MediaAsset:
+      type: object
+      properties:
+        _id: { type: string }
+        itemId: { type: string, nullable: true }
+        url: { type: string }
+        cdnKey: { type: string }
+        size: { type: integer }
+        mime: { type: string }
+        width: { type: integer, nullable: true }
+        height: { type: integer, nullable: true }
+        durationMs: { type: integer, nullable: true }
+    ProgressRecord:
+      type: object
+      properties:
+        _id: { type: string }
+        childId: { type: string }
+        itemId: { type: string }
+        status:
+          type: string
+          enum: [not_started, in_progress, completed]
+        score: { type: number, nullable: true }
+        updatedAt: { type: string, format: date-time }
+    ProgressSummary:
+      type: object
+      properties:
+        childId: { type: string }
+        total: { type: integer }
+        completed: { type: integer }
+        inProgress: { type: integer }
+        notStarted: { type: integer }
+        completionRate: { type: integer }
+    Milestone:
+      type: object
+      properties:
+        _id: { type: string }
+        childId: { type: string }
+        badgeKey: { type: string }
+        earnedAt: { type: string, format: date-time }
+        streak: { type: integer }
+    ParentalSettings:
+      type: object
+      properties:
+        dailyLimitMin: { type: integer }
+        mode:
+          type: string
+          enum: [strict, balanced, free]
+    Preferences:
+      type: object
+      properties:
+        lang:
+          type: string
+          enum: ['zh-CN', 'en', 'zh-TW']
+        theme:
+          type: string
+          enum: [light, dark, system]
+    VersionInfo:
+      type: object
+      properties:
+        version: { type: string }
+        minVersion: { type: string }
+        updateRequired: { type: boolean }
+    PrivacyPolicy:
+      type: object
+      properties:
+        url: { type: string }
+        text: { type: string, nullable: true }
+        updatedAt: { type: string, format: date-time }
+    # ---------------- Admin schemas ----------------
+    AdminUser:
+      type: object
+      properties:
+        id: { type: string }
+        phone: { type: string, example: "138****8000", description: Masked }
+        role:
+          type: string
+          enum: [parent, editor, admin]
+        status:
+          type: string
+          enum: [active, disabled]
+        createdAt: { type: string, format: date-time }
+    AdminStats:
+      type: object
+      properties:
+        contentTotal: { type: integer }
+        byStatus:
+          type: object
+          properties:
+            draft: { type: integer }
+            in_review: { type: integer }
+            published: { type: integer }
+            archived: { type: integer }
+        pendingReview:
+          type: integer
+          description: Alias of byStatus.in_review for the review queue card
+        mediaTotal: { type: integer }
+        recentAudit:
+          type: array
+          maxItems: 10
+          items: { $ref: '#/components/schemas/AuditEntry' }
+    AdminContent:
+      type: object
+      properties:
+        _id: { type: string }
+        moduleKey: { type: string }
+        type:
+          type: string
+          enum: [book, song, habit]
+        ageGroup:
+          type: string
+          enum: ['3-4', '4-6']
+        title: { type: string }
+        summary: { type: string, nullable: true }
+        cover: { type: string, nullable: true, description: cdnKey of the cover image }
+        mediaRef: { type: string, nullable: true }
+        tags:
+          type: array
+          items: { type: string }
+        order: { type: integer }
+        locale: { type: string, example: zh-CN }
+        isSample:
+          type: boolean
+          default: false
+          description: >
+            v1.2.1: marks a trial-read sample chapter shown on the child app
+            home screen. Admin-only writable (editor submissions return 40300).
+        status:
+          type: string
+          enum: [draft, in_review, published, archived]
+        version: { type: integer, description: Optimistic-lock counter, increments on every mutation }
+        authorId: { type: string }
+        reviewerId: { type: string, nullable: true }
+        publishedAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ContentCreate:
+      type: object
+      required: [moduleKey, type, ageGroup, title]
+      properties:
+        moduleKey: { type: string }
+        type: { type: string, enum: [book, song, habit] }
+        ageGroup: { type: string, enum: ['3-4', '4-6'] }
+        title: { type: string, maxLength: 80 }
+        summary: { type: string, maxLength: 300 }
+        cover: { type: string, description: cdnKey from media upload }
+        mediaRef: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        order: { type: integer }
+        locale: { type: string, default: zh-CN }
+        isSample:
+          type: boolean
+          description: >
+            v1.2.1, optional, admin-only: editors submitting this field receive
+            40300; admins may mark the new item as a sample chapter.
+    ContentUpdate:
+      type: object
+      required: [expectedVersion]
+      properties:
+        expectedVersion:
+          type: integer
+          description: Optimistic lock; 409 when it does not match current version
+        title: { type: string, maxLength: 80 }
+        summary: { type: string, maxLength: 300 }
+        cover: { type: string, nullable: true }
+        mediaRef: { type: string, nullable: true }
+        tags:
+          type: array
+          items: { type: string }
+        order: { type: integer }
+        locale: { type: string }
+        isSample:
+          type: boolean
+          description: >
+            v1.2.1, optional, admin-only: editors submitting this field receive
+            40300; admins may toggle the sample-chapter flag.
+    ContentRevision:
+      type: object
+      properties:
+        _id: { type: string }
+        contentId: { type: string }
+        version: { type: integer }
+        action:
+          type: string
+          enum: [submit, approve, publish, reject, restore]
+        note: { type: string, nullable: true }
+        authorId: { type: string }
+        createdAt: { type: string, format: date-time }
+    AdminModule:
+      type: object
+      properties:
+        _id: { type: string }
+        key: { type: string }
+        name: { type: string }
+        colorToken: { type: string, description: Design-token reference, never a raw hex in business data }
+        iconKey: { type: string, description: Phosphor icon name, e.g. BookOpen }
+        order: { type: integer }
+        enabled: { type: boolean }
+    ModuleUpsert:
+      type: object
+      required: [key, name]
+      properties:
+        key: { type: string, pattern: '^[a-z][a-z0-9_]*$' }
+        name: { type: string, maxLength: 40 }
+        colorToken: { type: string }
+        iconKey: { type: string, description: Must be a Phosphor icon name; emoji forbidden }
+        order: { type: integer }
+        enabled: { type: boolean }
+    ContentCategory:
+      type: object
+      properties:
+        _id: { type: string }
+        key: { type: string }
+        name: { type: string }
+        order: { type: integer }
+        enabled: { type: boolean }
+    CategoryUpsert:
+      type: object
+      required: [key, name]
+      properties:
+        key: { type: string, pattern: '^[a-z][a-z0-9_]*$' }
+        name: { type: string, maxLength: 40 }
+        order: { type: integer }
+        enabled: { type: boolean }
+    AdminMediaAsset:
+      type: object
+      properties:
+        _id: { type: string }
+        itemId: { type: string, nullable: true, description: Content item this asset is bound to, if any }
+        folder: { type: string, example: books }
+        fileName: { type: string }
+        mime: { type: string }
+        size: { type: integer }
+        width: { type: integer, nullable: true }
+        height: { type: integer, nullable: true }
+        durationMs: { type: integer, nullable: true }
+        cdnKey: { type: string }
+        url: { type: string, description: Public CDN URL }
+        uploadedBy: { type: string }
+        createdAt: { type: string, format: date-time }
+    MediaUploadRequest:
+      type: object
+      required: [folder, fileName, mime, size]
+      properties:
+        folder:
+          type: string
+          enum: [books, songs, covers, icons, misc]
+        fileName: { type: string, maxLength: 200 }
+        mime:
+          type: string
+          description: Must be in AdminSettings.allowedMimeTypes (40000 otherwise)
+        size:
+          type: integer
+          description: Must not exceed AdminSettings.mediaMaxSizeMB (40000 otherwise)
+        itemId: { type: string, nullable: true, description: Bind to a content item at upload time }
+        width: { type: integer, nullable: true }
+        height: { type: integer, nullable: true }
+        durationMs: { type: integer, nullable: true, description: For audio (song narration) }
+    MediaUploadResult:
+      type: object
+      properties:
+        mediaId: { type: string, description: media_assets record id }
+        cdnKey:
+          type: string
+          description: >
+            Deterministic object path "admin-media/{folder}/{yyyymm}/{uuid}-{fileName}";
+            use it as cover/mediaRef on content items.
+        cdnUrl: { type: string, description: Public CDN URL once upload completes }
+        upload:
+          type: object
+          description: Temporary cloud-storage credentials scoped to cdnKey only
+          properties:
+            tmpSecretId: { type: string }
+            tmpSecretKey: { type: string }
+            sessionToken: { type: string }
+            storagePath: { type: string }
+            expiresInSec: { type: integer, example: 1800 }
+            maxFileSize: { type: integer, description: Server-enforced byte limit }
+    AuditEntry:
+      type: object
+      properties:
+        _id: { type: string }
+        actor: { type: string, description: users._id of the operator }
+        actorRole: { type: string, enum: [editor, admin] }
+        action: { type: string, example: admin.content.approve }
+        targetType: { type: string, example: content_item }
+        targetId: { type: string }
+        before: { type: object, nullable: true }
+        after: { type: object, nullable: true }
+        ip: { type: string, nullable: true }
+        ts: { type: string, format: date-time }
+    AdminSettings:
+      type: object
+      properties:
+        mediaMaxSizeMB:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 50
+        allowedMimeTypes:
+          type: array
+          items: { type: string }
+          example: ["image/png", "image/jpeg", "image/webp", "audio/mpeg", "audio/mp4"]
+        defaultLocale:
+          type: string
+          default: zh-CN
+        paginationLimit:
+          type: integer
+          minimum: 10
+          maximum: 100
+          default: 20

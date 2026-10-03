@@ -1,0 +1,154 @@
+# Android 构建（GitHub Actions）
+#
+# 目标：**不依赖任何外部账号**（不需要 Expo/EAS 账号），在 GitHub 托管 runner 上
+# 用「expo prebuild + Gradle」原生编译出 APK。产物以 workflow artifact 形式提供。
+#
+# 两个作业：
+#   verify —— 全量质量门禁（儿童 App / 后端冒烟 / 运营后台），任一失败即阻断
+#   apk    —— 依赖 verify，通过后才编译 APK
+#
+# PR 只跑 verify（快）；推 main 或手动触发才跑 APK（原生编译含 NDK，耗时较长）。
+# 手动触发：GitHub 页面 Actions → Android Build → Run workflow
+
+name: Android Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一分支的新推送取消上一次未跑完的构建，避免排队堆积
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            dodokid/package-lock.json
+            dodokid-admin/package-lock.json
+            dodokid/cloudbase/functions/api/package-lock.json
+
+      # ---------- 儿童 App（Expo / React Native）----------
+      - name: Install dependencies (child app)
+        working-directory: dodokid
+        run: npm ci
+
+      - name: Typecheck (child app)
+        working-directory: dodokid
+        run: npm run typecheck
+
+      # --max-warnings 0：警告也视为失败，避免门禁被"新增 warning"逐步腐蚀
+      - name: Lint (child app)
+        working-directory: dodokid
+        run: npx eslint src --max-warnings 0
+
+      - name: Unit tests (child app)
+        working-directory: dodokid
+        run: npm test -- --ci
+
+      # ---------- 后端（CloudBase 云函数）----------
+      # 冒烟测试用内存态与固定夹具，不连数据库、不需要 .env
+      - name: Smoke tests (backend)
+        working-directory: dodokid/cloudbase/functions/api
+        run: |
+          npm ci
+          node tests/smoke-admin.test.js
+          node tests/smoke-routes.test.js
+
+      # ---------- 运营后台（Vite / React / Ant Design）----------
+      - name: Install dependencies (admin)
+        working-directory: dodokid-admin
+        run: npm ci
+
+      - name: Typecheck (admin)
+        working-directory: dodokid-admin
+        run: npx tsc --noEmit
+
+      - name: Lint (admin)
+        working-directory: dodokid-admin
+        run: npx eslint . --max-warnings 0
+
+      - name: Build (admin)
+        working-directory: dodokid-admin
+        # VITE_API_BASE 缺省时会打包并启用 MSW Mock（后台不会连真实后端）。
+        # 这里只验证"能构建成功"，故不注入该变量；真实联调见 docs/deployment-plan.md。
+        run: npm run build
+
+  apk:
+    name: Build Android APK
+    needs: verify
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: dodokid/package-lock.json
+
+      - name: Install dependencies
+        working-directory: dodokid
+        run: npm ci
+
+      # RN 0.79 / AGP 8.x 要求 JDK 17
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses > /dev/null
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('dodokid/package-lock.json') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Generate native project (expo prebuild)
+        working-directory: dodokid
+        env:
+          CI: 'true'
+          EXPO_NO_TELEMETRY: '1'
+        # --no-install：依赖已由 npm ci 装好，避免 prebuild 再动一次包管理器
+        run: npx expo prebuild --platform android --non-interactive --no-install
+
+      - name: Assemble release APK
+        working-directory: dodokid/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      # 说明：Expo prebuild 生成的 release 构建默认用 debug keystore 签名，
+      # 因此无需任何 secret 即可产出可安装 APK。若要上架应用商店，
+      # 需改为正式 keystore 签名（把 keystore 存为 GitHub Secret），详见 README。
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: dodokid-android-apk
+          path: dodokid/android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14

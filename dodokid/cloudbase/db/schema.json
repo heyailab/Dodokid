@@ -1,0 +1,181 @@
+{
+  "description": "CloudBase collection and index definitions for DodoKid. Source of truth for db/init-collections.js and the deployment README. v0.2: extends users/content_items/content_modules/media_assets/audit_log with operations-console fields (Spec 6.1) and adds content_revisions/content_categories/content_tags/admin_settings (Spec 6.2 + settingsAdmin.service).",
+  "collections": [
+    {
+      "name": "users",
+      "indexes": [
+        { "name": "idx_phone", "keys": { "phone": 1 }, "unique": true },
+        { "name": "idx_role", "keys": { "role": 1 } }
+      ],
+      "v02Fields": {
+        "role": "parent|editor|admin (default parent); ops login requires editor/admin",
+        "status": "active|disabled (default active); disabled blocks adminAuth immediately",
+        "passwordHash": "nullable; only ops accounts (editor/admin) have one, for account+password console login (Spec 7.2)"
+      }
+    },
+    {
+      "name": "child_profiles",
+      "indexes": [ { "name": "idx_userId", "keys": { "userId": 1 } } ]
+    },
+    {
+      "name": "consent_records",
+      "indexes": [ { "name": "idx_childId", "keys": { "childId": 1 } } ]
+    },
+    {
+      "name": "content_modules",
+      "indexes": [
+        { "name": "idx_key", "keys": { "key": 1 }, "unique": true },
+        { "name": "idx_order", "keys": { "order": 1 } }
+      ],
+      "v02Fields": {
+        "iconKey": "Phosphor icon name (e.g. BookOpen); single icon source for the whole product, emoji forbidden",
+        "order": "display sort order in app module grid and admin tables",
+        "enabled": "false hides the module from C-end /content/categories"
+      }
+    },
+    {
+      "name": "content_items",
+      "indexes": [
+        { "name": "idx_module_age", "keys": { "moduleKey": 1, "ageGroup": 1 } },
+        { "name": "idx_module_age_status", "keys": { "moduleKey": 1, "ageGroup": 1, "status": 1 }, "description": "C-end list query: only status=published (AC-10/13/15)" },
+        { "name": "idx_status_sample_age", "keys": { "status": 1, "isSample": 1, "ageGroup": 1 }, "description": "C-end samples query: published + isSample=true (v1.2.1)" },
+        { "name": "idx_status", "keys": { "status": 1, "updatedAt": -1 }, "description": "Admin list + review queue" },
+        { "name": "idx_authorId", "keys": { "authorId": 1 } }
+      ],
+      "v02Fields": {
+        "status": "draft|in_review|published|archived (default draft); C-end reads published only",
+        "version": "integer, optimistic-lock counter, increments on every mutation",
+        "publishedAt": "set on approve (in_review->published)",
+        "authorId": "users._id of creator",
+        "reviewerId": "users._id of the admin who approved/rejected",
+        "tags": "array of content_tags.key",
+        "order": "display sort within module+ageGroup",
+        "cover": "media_assets.cdnKey of the cover image",
+        "summary": "short description shown in lists",
+        "locale": "BCP-47, default zh-CN",
+        "isSample": "boolean, default false (v1.2.1); trial-read sample chapter surfaced via GET /content/samples; admin-only writable via admin API (editor submissions -> 40300)"
+      }
+    },
+    {
+      "name": "progress_records",
+      "indexes": [ { "name": "idx_childId", "keys": { "childId": 1 } } ]
+    },
+    {
+      "name": "milestones",
+      "indexes": [ { "name": "idx_childId", "keys": { "childId": 1 } } ]
+    },
+    {
+      "name": "parental_settings",
+      "indexes": [ { "name": "idx_userId", "keys": { "userId": 1 }, "unique": true } ]
+    },
+    {
+      "name": "preferences",
+      "indexes": [ { "name": "idx_userId", "keys": { "userId": 1 }, "unique": true } ]
+    },
+    {
+      "name": "media_assets",
+      "indexes": [
+        { "name": "idx_itemId", "keys": { "itemId": 1 } },
+        { "name": "idx_folder", "keys": { "folder": 1 } },
+        { "name": "idx_uploadedBy", "keys": { "uploadedBy": 1 } }
+      ],
+      "v02Fields": {
+        "folder": "books|songs|covers|icons|misc (upload bucket)",
+        "mime": "content type, must be in AdminSettings.allowedMimeTypes",
+        "width": "pixels, images only",
+        "height": "pixels, images only",
+        "durationMs": "audio only (narration/songs)",
+        "uploadedBy": "users._id of the uploader",
+        "createdAt": "record creation time (credentials issuance)"
+      }
+    },
+    {
+      "name": "feedback",
+      "indexes": [ { "name": "idx_userId", "keys": { "userId": 1 } } ]
+    },
+    {
+      "name": "audit_log",
+      "indexes": [
+        { "name": "idx_actor", "keys": { "actor": 1 } },
+        { "name": "idx_target", "keys": { "targetType": 1, "targetId": 1 } },
+        { "name": "idx_ts", "keys": { "ts": -1 } }
+      ],
+      "v02Fields": {
+        "actorRole": "editor|admin at event time",
+        "targetType": "content_item|module|category|media_asset|user|settings",
+        "targetId": "target record _id",
+        "before": "state snapshot before mutation (null on create)",
+        "after": "state snapshot after mutation (null on delete)",
+        "ip": "client IP of the console request, nullable"
+      }
+    },
+    {
+      "name": "sms_codes",
+      "indexes": [ { "name": "idx_phone", "keys": { "phone": 1 } } ]
+    },
+    {
+      "name": "rate_limits",
+      "indexes": [ { "name": "idx_window", "keys": { "windowStart": 1 } } ]
+    },
+    {
+      "name": "token_blacklist",
+      "indexes": [ { "name": "idx_jti", "keys": { "jti": 1 }, "unique": true } ]
+    },
+    {
+      "name": "admin_settings",
+      "indexes": [
+        { "name": "idx_key", "keys": { "key": 1 }, "unique": true }
+      ],
+      "coreFields": {
+        "key": "singleton marker, always 'global'",
+        "mediaMaxSizeMB": "max upload size enforced by POST /admin/media (default 50)",
+        "allowedMimeTypes": "whitelist enforced by POST /admin/media",
+        "defaultLocale": "default content locale (default zh-CN)",
+        "paginationLimit": "admin list default page size (default 20)",
+        "updatedBy": "users._id of the last admin who changed settings",
+        "updatedAt": "last change time",
+        "note": "single-document collection; services/admin/settingsAdmin.service.js creates it lazily with defaults on first read if missing"
+      }
+    },
+    {
+      "name": "content_revisions",
+      "indexes": [
+        { "name": "idx_content_version", "keys": { "contentId": 1, "version": -1 }, "unique": true }
+      ],
+      "coreFields": {
+        "contentId": "content_items._id",
+        "version": "content_items.version at snapshot time",
+        "snapshot": "full content_items document snapshot (forward-only rollback source)",
+        "action": "submit|approve|publish|reject|restore (withdraw produces no revision)",
+        "note": "free text (reject reason, restore note)",
+        "authorId": "users._id who triggered the event",
+        "createdAt": "event time"
+      },
+      "note": "Written on submit (AC-09), approve, reject and restore. Never rewritten."
+    },
+    {
+      "name": "content_categories",
+      "indexes": [
+        { "name": "idx_key", "keys": { "key": 1 }, "unique": true }
+      ],
+      "coreFields": {
+        "key": "slug identifier",
+        "name": "display name",
+        "order": "sort order",
+        "enabled": "false hides from admin pickers"
+      }
+    },
+    {
+      "name": "content_tags",
+      "indexes": [
+        { "name": "idx_key", "keys": { "key": 1 }, "unique": true },
+        { "name": "idx_moduleKey", "keys": { "moduleKey": 1 } }
+      ],
+      "coreFields": {
+        "key": "slug identifier, referenced by content_items.tags[]",
+        "name": "display name",
+        "moduleKey": "optional scoping to a module (age/theme tags)"
+      }
+    }
+  ]
+}

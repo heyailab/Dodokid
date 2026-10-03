@@ -1,0 +1,14 @@
+{
+  "name": "dodokid-db-tools",
+  "version": "1.0.0",
+  "description": "CloudBase database init and seed tooling for DodoKid",
+  "private": true,
+  "scripts": {
+    "init": "node init-collections.js",
+    "seed": "node seed-content.js"
+  },
+  "dependencies": {
+    "@cloudbase/node-sdk": "^2.0.0",
+    "@cloudbase/manager-node": "^1.0.0"
+  }
+}

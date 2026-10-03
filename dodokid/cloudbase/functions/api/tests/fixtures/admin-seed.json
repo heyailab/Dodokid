@@ -1,0 +1,23 @@
+{
+  "users": [
+    { "_id": "u_editor", "phone": "13800000001", "role": "editor", "status": "active", "createdAt": "2026-10-01T00:00:00.000Z", "updatedAt": "2026-10-01T00:00:00.000Z" },
+    { "_id": "u_admin", "phone": "13800000002", "role": "admin", "status": "active", "createdAt": "2026-10-01T00:00:00.000Z", "updatedAt": "2026-10-01T00:00:00.000Z" },
+    { "_id": "u_parent", "phone": "13800000003", "role": "parent", "status": "active", "createdAt": "2026-10-01T00:00:00.000Z", "updatedAt": "2026-10-01T00:00:00.000Z" },
+    { "_id": "u_disabled", "phone": "13800000004", "role": "editor", "status": "disabled", "createdAt": "2026-10-01T00:00:00.000Z", "updatedAt": "2026-10-01T00:00:00.000Z" }
+  ],
+  "content_items": [
+    { "_id": "c_draft", "moduleKey": "books", "type": "book", "ageGroup": "3-4", "title": "Draft story", "status": "draft", "version": 1, "tags": [], "order": 0, "locale": "zh-CN", "createdAt": "2026-10-01T00:00:00.000Z", "updatedAt": "2026-10-01T00:00:00.000Z" },
+    { "_id": "c_published", "moduleKey": "books", "type": "book", "ageGroup": "3-4", "title": "Live story", "status": "published", "version": 2, "isSample": true, "tags": [], "order": 0, "locale": "zh-CN", "publishedAt": "2026-10-01T01:00:00.000Z", "createdAt": "2026-10-01T00:00:00.000Z", "updatedAt": "2026-10-01T01:00:00.000Z" },
+    { "_id": "c_secret_draft", "moduleKey": "books", "type": "book", "ageGroup": "4-6", "title": "Secret draft story", "status": "draft", "version": 1, "tags": [], "order": 0, "locale": "zh-CN", "createdAt": "2026-10-01T00:00:00.000Z", "updatedAt": "2026-10-01T00:00:00.000Z" },
+    { "_id": "c_inreview", "moduleKey": "songs", "type": "song", "ageGroup": "3-4", "title": "Song in review", "status": "in_review", "version": 2, "tags": [], "order": 0, "locale": "zh-CN", "reviewerId": "u_admin", "createdAt": "2026-10-01T00:00:00.000Z", "updatedAt": "2026-10-01T00:00:00.000Z" },
+    { "_id": "c_archived", "moduleKey": "songs", "type": "song", "ageGroup": "3-4", "title": "Old song", "status": "archived", "version": 1, "tags": [], "order": 0, "locale": "zh-CN", "createdAt": "2026-10-01T00:00:00.000Z", "updatedAt": "2026-10-01T00:00:00.000Z" }
+  ],
+  "content_modules": [
+    { "_id": "m_books", "key": "books", "name": "绘本共读", "order": 1, "enabled": true, "createdAt": "2026-10-01T00:00:00.000Z", "updatedAt": "2026-10-01T00:00:00.000Z" },
+    { "_id": "m_songs", "key": "songs", "name": "儿歌音频", "order": 2, "enabled": true, "createdAt": "2026-10-01T00:00:00.000Z", "updatedAt": "2026-10-01T00:00:00.000Z" },
+    { "_id": "m_hidden", "key": "hidden", "name": "Hidden module", "order": 9, "enabled": false, "createdAt": "2026-10-01T00:00:00.000Z", "updatedAt": "2026-10-01T00:00:00.000Z" }
+  ],
+  "content_revisions": [],
+  "audit_log": [],
+  "media_assets": []
+}
