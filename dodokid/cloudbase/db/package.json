@@ -5,10 +5,12 @@
   "private": true,
   "scripts": {
     "init": "node init-collections.js",
-    "seed": "node seed-content.js"
+    "seed": "node seed-content.js",
+    "init:mongo": "node init-mongo.js"
   },
   "dependencies": {
+    "@cloudbase/manager-node": "^1.0.0",
     "@cloudbase/node-sdk": "^2.0.0",
-    "@cloudbase/manager-node": "^1.0.0"
+    "mongodb": "^6.12.0"
   }
 }
