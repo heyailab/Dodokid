@@ -10,6 +10,14 @@ function str(name, fallback) {
 
 const nodeEnv = str('NODE_ENV', 'production');
 
+// 媒体驱动解析：auto 时「配了 COS 就用 COS，否则落本地磁盘」——
+// 自托管通常没有 COS，就该直接用服务器磁盘，不该被硬性要求去开通对象存储。
+const mediaDriverResolved = (() => {
+  const d = str('MEDIA_DRIVER', 'auto').toLowerCase();
+  if (d === 'local' || d === 'cos') return d;
+  return str('COS_BUCKET', '') ? 'cos' : 'local';
+})();
+
 const config = {
   // CloudBase environment id. In a cloud function this is injected automatically;
   // it can be overridden for local/test execution.
@@ -58,6 +66,12 @@ const config = {
   cosBucket: str('COS_BUCKET', ''), // full bucket name incl. APPID suffix, e.g. dodokid-1250000000
   cosRegion: str('COS_REGION', 'ap-guangzhou'),
   mediaCdnBaseUrl: str('MEDIA_CDN_BASE_URL', ''),
+  // 媒体存储驱动（auto 已在上方解析为 local 或 cos）
+  mediaDriver: mediaDriverResolved,
+  // 本地磁盘根目录（mediaDriver=local 时使用）
+  mediaRoot: str('MEDIA_ROOT', '/var/lib/dodokid/media'),
+  // 本地媒体的对外路径前缀（配合 MEDIA_CDN_BASE_URL，例如 /media）
+  mediaPublicPath: str('MEDIA_PUBLIC_PATH', '/media'),
 
   // ---- 部署形态 ----
   // cloudbase：腾讯云 CloudBase 云函数 + 文档数据库（默认）
@@ -81,6 +95,9 @@ const config = {
 // 自托管形态的必填项：媒体域名缺省会让绘本封面 404，早失败好过线上排查
 if (config.dbDriver === 'mongo' && !config.mediaCdnBaseUrl && !config.devMode) {
   throw new Error('MEDIA_CDN_BASE_URL is required when DB_DRIVER=mongo');
+}
+if (config.mediaDriver === 'local' && !config.mediaCdnBaseUrl && !config.devMode) {
+  throw new Error('MEDIA_CDN_BASE_URL is required when media storage is local');
 }
 
 // Fail fast in production if the JWT secret is missing.
