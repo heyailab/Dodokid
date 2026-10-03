@@ -182,18 +182,32 @@ export interface MediaUploadRequest {
   durationMs?: number | null;
 }
 
+export type MediaUploadTarget =
+  /** 服务器本地磁盘：把文件 PUT 到后端自己的端点 */
+  | {
+      driver: 'local';
+      method: 'PUT';
+      uploadPath: string;
+      storagePath: string;
+      maxFileSize: number;
+      headers: Record<string, string>;
+    }
+  /** 腾讯云 COS：临时凭证 + 直传（控制台尚未接入 SDK） */
+  | {
+      driver?: 'cos';
+      tmpSecretId: string;
+      tmpSecretKey: string;
+      sessionToken: string;
+      storagePath: string;
+      expiresInSec: number;
+      maxFileSize: number;
+    };
+
 export interface MediaUploadResult {
   mediaId: string;
   cdnKey: string;
   cdnUrl: string;
-  upload: {
-    tmpSecretId: string;
-    tmpSecretKey: string;
-    sessionToken: string;
-    storagePath: string;
-    expiresInSec: number;
-    maxFileSize: number;
-  };
+  upload: MediaUploadTarget;
 }
 
 export interface AuditEntry {
