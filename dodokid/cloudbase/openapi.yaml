@@ -2173,6 +2173,11 @@ components:
         version: { type: string }
         minVersion: { type: string }
         updateRequired: { type: boolean }
+        mediaBaseUrl:
+          type: string
+          description: >-
+            媒体公开地址前缀，如 https://dodokid.heymf.cn/media；空字符串表示未配置，
+            前端应使用兜底值。
     PrivacyPolicy:
       type: object
       properties:
