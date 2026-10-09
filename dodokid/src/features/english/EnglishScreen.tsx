@@ -25,9 +25,13 @@ import { WordQuiz } from './WordQuiz';
 import { WordIcon } from './WordIcon';
 import { wordsForAge } from './englishData';
 import { wrapIndex } from '../../shared/lib/quizCore';
+import { useMediaBase } from '../../shared/lib/useMediaBase';
+import { mediaUrl } from '../../shared/lib/mediaBase';
 
 export function EnglishScreen({ navigation }: { navigation: any }) {
   useContentActivity();
+  // 订阅基址变化：后台拉到真实域名后重渲染，下面的 mediaUrl 才会用上新值
+  useMediaBase();
   const childId = useAuthStore((s) => s.currentChildId);
   const ageGroup = useAuthStore(
     (s) => s.children.find((c) => c.id === s.currentChildId)?.ageGroup,
@@ -103,7 +107,7 @@ export function EnglishScreen({ navigation }: { navigation: any }) {
         <Text style={styles.zh}>{current.zh}</Text>
       </Card>
 
-      <NarrationButton uri={current.audioUrl} />
+      <NarrationButton uri={mediaUrl(current.audioKey)} />
 
       <View style={styles.nav}>
         <Pressable
