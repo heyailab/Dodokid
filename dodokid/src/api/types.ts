@@ -188,6 +188,12 @@ export interface VersionInfo {
   latest: string;
   current: string;
   forceUpdate: boolean;
+  /**
+   * 媒体基址（如 `https://dodokid.heymf.cn/media`）。
+   * 由后端环境变量 MEDIA_CDN_BASE_URL 下发，前端冷启动时读取并缓存，
+   * 使更换媒体域名无需重新打包。字段可选：后端未配置时前端降级到兜底常量。
+   */
+  mediaBaseUrl?: string;
 }
 export interface PrivacyPolicy {
   version: string;
