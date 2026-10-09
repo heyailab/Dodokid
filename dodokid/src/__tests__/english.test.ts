@@ -4,6 +4,7 @@
  */
 import { ENGLISH_WORDS, wordsForAge } from '../features/english/englishData';
 import { OPTION_COUNT, buildWordQuestions, gradeWord } from '../features/english/wordQuestions';
+import { mediaUrl } from '../shared/lib/mediaBase';
 
 const rng = () => 0.37;
 
@@ -33,7 +34,10 @@ describe('englishData 单词卡', () => {
       expect(w.word).toMatch(/^[a-z]+$/);
       expect(w.phonetic).toMatch(/^\/.+\/$/);
       expect(w.zh).toBeTruthy();
-      expect(w.audioUrl).toMatch(/^https:\/\//);
+      // 数据文件只存相对 key（不含域名），经 mediaUrl 渲染时才拼成绝对地址
+      expect(w.audioKey).not.toMatch(/^https?:\/\//);
+      expect(w.audioKey).toMatch(/^english\/.+\.mp3$/);
+      expect(mediaUrl(w.audioKey)).toMatch(/^https:\/\/.+\/english\/.+\.mp3$/);
     });
     expect(new Set(ENGLISH_WORDS.map((w) => w.id)).size).toBe(ENGLISH_WORDS.length);
     expect(new Set(ENGLISH_WORDS.map((w) => w.word)).size).toBe(ENGLISH_WORDS.length);
