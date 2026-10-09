@@ -4,11 +4,11 @@
  */
 
 import type {
+  AgeGroup,
   ChildCreateReq,
   ChildProfile,
   ConsentRecord,
   ContentCategory,
-  ContentItem,
   GateVerifyReq,
   GateVerifyResult,
   Milestone,
@@ -20,6 +20,9 @@ import type {
   WeekReport,
 } from './types';
 import { colors } from '../design/tokens';
+import { BOOK_SEEDS, resolveBook, resolvedBooks } from './mockBooks';
+import { getMediaBase } from '../shared/lib/mediaBase';
+import { API_BASE_URL } from './config';
 
 /* --------------------------------- 种子数据 --------------------------------- */
 
@@ -32,51 +35,22 @@ const categories: ContentCategory[] = [
   { key: 'english', label: '英语启蒙', color: colors.module.english },
 ];
 
-function makeBook(
-  id: string,
-  title: string,
-  module: ContentItem['module'],
-  ageGroups: ContentItem['ageGroups'],
-  sample: boolean,
-): ContentItem {
-  const pages = Array.from({ length: 4 }, (_, i) => ({
-    index: i,
-    imageUrl: `https://cdn.dodokid.example.com/book/${id}/p${i}.webp`,
-    text: `${title}·第 ${i + 1} 页：多多和伙伴们一起探索奇妙世界。`,
-    audioUrl: `https://cdn.dodokid.example.com/book/${id}/p${i}.mp3`,
-    questions:
-      i === 3
-        ? [
-            {
-              id: `${id}-q1`,
-              prompt: '多多在故事里学会了什么？',
-              options: [{ label: '分享' }, { label: '独占' }, { label: '逃避' }],
-              answerIndex: 0,
-            },
-          ]
-        : [],
-  }));
-  return {
-    id,
-    title,
-    module,
-    version: '1.0.0',
-    ageGroups,
-    coverUrl: `https://cdn.dodokid.example.com/book/${id}/cover.webp`,
-    sample,
-    pageCount: pages.length,
-    summary: `${title}：适合亲子共读的温暖小故事。`,
-    pages,
-  };
+/**
+ * 隐私政策页地址。
+ *
+ * 不用 `process.env.EXPO_PUBLIC_PRIVACY_URL`：隐私政策属于**后端管辖的运营内容**，
+ * 已有 `GET /privacyPolicy` 端点由后端下发真实地址，前端不该再持有一份会过期的副本
+ * （多一份配置就多一处漂移源，换域名时容易只改一处）。
+ * 这里在 mock 模式下按 API 基址的 origin 推导，仅用于让本地联调有可点的链接；
+ * 正式环境该字段由后端返回，不经过这段代码。
+ */
+function privacyPolicyUrl(): string {
+  try {
+    return `${new URL(API_BASE_URL).origin}/privacy`;
+  } catch {
+    return '/privacy';
+  }
 }
-
-const books: ContentItem[] = [
-  makeBook('b-sleep', '多多睡觉啦', 'book', ['3-4', '4-6'], true),
-  makeBook('b-share', '多多的分享日', 'book', ['3-4'], false),
-  makeBook('b-sea', '海底小探险', 'book', ['4-6'], false),
-  makeBook('s-twinkle', '小星星', 'song', ['3-4', '4-6'], true),
-  makeBook('l-cat', '小猫识字', 'literacy', ['4-6'], false),
-];
 
 /* --------------------------------- 内存态 --------------------------------- */
 
@@ -158,30 +132,36 @@ export async function routeMock(
   }
 
   // 内容
+  // 注意：统一走 resolvedBooks()，它在**每次请求时**用当前基址拼接媒体地址，
+  // 因此运行时基址更新后无需重启即可生效。
   if (method === 'GET' && p === '/content/categories') return delay(categories);
   if (method === 'GET' && p === '/content/samples') {
-    const age = params?.ageGroup as string | undefined;
-    const list = age ? books.filter((b) => b.sample && b.ageGroups.includes(age as ContentItem['ageGroups'][number])) : books.filter((b) => b.sample);
-    return delay(list);
+    const age = params?.ageGroup as AgeGroup | undefined;
+    return delay(
+      resolvedBooks((b) => b.sample && (age ? b.ageGroups.includes(age) : true)),
+    );
   }
   if (method === 'GET' && p === '/content/list') {
-    const age = params?.ageGroup as ContentItem['ageGroups'][number] | undefined;
-    const list = age ? books.filter((b) => b.ageGroups.includes(age) || b.sample) : books;
-    return delay(list);
+    const age = params?.ageGroup as AgeGroup | undefined;
+    return delay(
+      resolvedBooks((b) => (age ? b.ageGroups.includes(age) || b.sample : true)),
+    );
   }
   if (method === 'GET' && p === '/content/search') {
     const kw = ((params?.keyword as string) ?? '').toLowerCase();
-    return delay(books.filter((b) => b.title.toLowerCase().includes(kw)));
+    return delay(resolvedBooks((b) => b.title.toLowerCase().includes(kw)));
   }
   if (method === 'GET' && p === '/content/mediaUrl') {
     const contentId = (params?.contentId as string) ?? '';
     const page = Number(params?.page ?? 0);
-    const b = books.find((x) => x.id === contentId);
-    return delay(b?.pages[page]?.audioUrl ?? '');
+    const seed = BOOK_SEEDS.find((x) => x.id === contentId);
+    const key = seed?.pages[page]?.audioKey;
+    return delay(key ? resolveBook(seed).pages[page]?.audioUrl ?? '' : '');
   }
   if (method === 'GET' && p.startsWith('/content/')) {
     const id = p.split('/')[2] ?? '';
-    return delay(books.find((b) => b.id === id) ?? null);
+    const seed = BOOK_SEEDS.find((b) => b.id === id);
+    return delay(seed ? resolveBook(seed) : null);
   }
 
   // 进度
@@ -256,10 +236,21 @@ export async function routeMock(
   if (method === 'POST' && p === '/feedback') return delay(null);
 
   // 系统
+  // /version 带上 mediaBaseUrl，与真实后端契约一致：
+  // 前端 initMediaBase() 启动时读它，从而在不改包的前提下切换媒体域名。
   if (method === 'GET' && p === '/version')
-    return delay({ latest: '1.0.0', current: '1.0.0', forceUpdate: false });
+    return delay({
+      latest: '1.0.0',
+      current: '1.0.0',
+      forceUpdate: false,
+      mediaBaseUrl: getMediaBase(),
+    });
   if (method === 'GET' && p === '/privacyPolicy')
-    return delay({ version: '2026-01', url: 'https://dodokid.example.com/privacy', updatedAt: '2026-01-01' });
+    return delay({
+      version: '2026-01',
+      url: privacyPolicyUrl(),
+      updatedAt: '2026-01-01',
+    });
 
   // 周报（家长中心使用）
   if (method === 'GET' && p.startsWith('/report/week/')) {
