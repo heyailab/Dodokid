@@ -25,9 +25,13 @@ import { NarrationButton } from '../book/NarrationButton';
 import { LiteracyQuiz } from './LiteracyQuiz';
 import { cardsForAge, splitHighlight } from './literacyData';
 import { wrapIndex } from './quiz';
+import { useMediaBase } from '../../shared/lib/useMediaBase';
+import { mediaUrl } from '../../shared/lib/mediaBase';
 
 export function LiteracyScreen({ navigation }: { navigation: any }) {
   useContentActivity();
+  // 订阅基址变化：后台拉到真实域名后重渲染，下面的 mediaUrl 才会用上新值
+  useMediaBase();
   const childId = useAuthStore((s) => s.currentChildId);
   const ageGroup = useAuthStore(
     (s) => s.children.find((c) => c.id === s.currentChildId)?.ageGroup,
@@ -131,7 +135,7 @@ export function LiteracyScreen({ navigation }: { navigation: any }) {
       </Pressable>
 
       <View style={styles.row}>
-        <NarrationButton uri={current.audioUrl} />
+        <NarrationButton uri={mediaUrl(current.audioKey)} />
         <Button
           label="翻面"
           variant="ghost"
