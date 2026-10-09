@@ -12,6 +12,9 @@
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'selfhost-test-secret';
 process.env.NODE_ENV = 'development';
 process.env.PORT = '0'; // 让内核分配空闲端口，避免与本机真实服务冲突
+// /version 要把媒体基址下发下去，这里给一个已配置的值，用来验证
+// 「环境变量 -> config -> 响应」这条链路真的通了，而不只是字段存在。
+process.env.MEDIA_CDN_BASE_URL = 'https://dodokid.test/media';
 
 const path = require('path');
 
@@ -176,6 +179,23 @@ async function main() {
     version.json
   );
 
+  // 媒体基址随version 下发：前端据此在运行时拼地址，换域名不必重编 APK
+  check(
+    'version 返回 mediaBaseUrl 字段',
+    version.json && version.json.data && version.json.data.mediaBaseUrl !== undefined,
+    version.json
+  );
+  eq(
+    'mediaBaseUrl 等于 MEDIA_CDN_BASE_URL 配置值',
+    version.json && version.json.data && version.json.data.mediaBaseUrl,
+    'https://dodokid.test/media'
+  );
+  check(
+    'mediaBaseUrl 是字符串且非 null',
+    typeof (version.json && version.json.data && version.json.data.mediaBaseUrl) === 'string',
+    version.json && version.json.data && version.json.data.mediaBaseUrl
+  );
+
   // 内容类接口全部需要鉴权（有意收紧的契约：App 侧未登录取不到任何内容）
   const list = await call('GET', '/api/v1/content/list');
   check('GET /api/v1/content/list 缺令牌返回 401', list.status === 401, list);
@@ -225,6 +245,25 @@ async function main() {
   // 路径穿越：URL 里的 ../ 会被 fetch/URL 归一化，所以用编码形式绕过
   const evil = await fetch(base + '/media/%2e%2e%2f%2e%2e%2fetc%2fpasswd');
   check('GET /media/<穿越路径> 不返回文件内容', evil.status !== 200, evil.status);
+
+  // ---- 未配置 MEDIA_CDN_BASE_URL 时下发空字符串（不是 null/undefined）----
+  // 直接单测 service：HTTP 层的 config 已在进程内固化，改 env 不会重新求值。
+  const configPath = require.resolve('../config');
+  const realConfig = require.cache[configPath].exports;
+  require.cache[configPath].exports = Object.assign({}, realConfig, { mediaCdnBaseUrl: '' });
+  delete require.cache[require.resolve('../services/meta.service')];
+  const metaService = require('../services/meta.service');
+  const unconfigured = metaService.getVersion();
+  eq('未配置时 mediaBaseUrl 为空字符串', unconfigured.mediaBaseUrl, '');
+  check('未配置时 mediaBaseUrl 不是 null', unconfigured.mediaBaseUrl !== null, unconfigured.mediaBaseUrl);
+  check(
+    '未配置时字段仍存在（前端可安全读取）',
+    Object.prototype.hasOwnProperty.call(unconfigured, 'mediaBaseUrl'),
+    unconfigured
+  );
+  // 还原，避免污染同进程后续断言
+  require.cache[configPath].exports = realConfig;
+  delete require.cache[require.resolve('../services/meta.service')];
 
   server.close();
   console.log('\nRESULT: ' + passed + ' passed, ' + failed + ' failed');
