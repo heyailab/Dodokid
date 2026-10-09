@@ -8,6 +8,10 @@ function getVersion() {
     version: config.appVersion,
     minVersion: config.minAppVersion,
     updateRequired: false,
+    // 媒体公开地址前缀随运行时配置下发：换域名只改后端 MEDIA_CDN_BASE_URL，
+    // 不需要重新编译前端。未配置时下发空字符串，前端按自己的兜底值处理。
+    // 绝不下发 null/undefined，避免客户端把 "null" 拼进 URL。
+    mediaBaseUrl: config.mediaCdnBaseUrl || '',
   };
 }
 
