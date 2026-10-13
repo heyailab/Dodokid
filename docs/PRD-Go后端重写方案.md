@@ -1,7 +1,7 @@
 # PRD：Go 后端重写方案（DodoKid）
 
-> 版本：v2.0　　日期：2026-10-12
-> 状态：待评审（数据库选型已定：**PostgreSQL**）
+> 版本：v2.1　　日期：2026-10-13
+> 状态：可开工（数据库选型已定 **PostgreSQL**；契约基线已锁定，见第 10 章）
 > 背景：现有 Node + Express + MongoDB 后端在宝塔面板部署时暴露过多环境耦合（dotenv 缺失、全网卡监听、PM2 环境变量），改用 Go 重写为「单二进制 + PostgreSQL」，保留关系模型与通用运维工具。
 > **前端（儿童 App + 运营后台）完全复用，不做任何改动。**
 
@@ -184,7 +184,7 @@ media_assets.item_id          → content_items.id   (可空)
 | 位置 | 涉及集合 | 失败后果 | 优先级 |
 |---|---|---|---|
 | **`child.service.js:85-98` deleteChild** | **5 个** | 孩子已删但同意记录仍 active → **合规风险**（GDPR 式删除未完成） | **最高** |
-| **`child.service.js:46-53` createChild** | 3 个 | 同意记录未消费 → **同一份同意可重复用于创建第二个孩子** | **最高** |
+| **`child.service.js:40-52` createChild** | 3 个 | **并发竞态**：第 40 行读同意、第 42 行校验`consent.childId`、第 52 行才写。两个并发请求可同时通过第 42 行校验各建一个孩子（`consent.repo.js` 只有 `updateById`，无条件更新） | **最高** |
 | `contentWorkflow.service.js:234-268` restore | 3 个 | 状态已改但内容是旧的，无法回滚 | 高 |
 | `auth.service.js:65-74` register | 2 个 | 验证码已消费但用户未创建 → **该邮箱再也无法注册** | 高 |
 | 状态机其余 5 个迁移 | 3 个 | 内容进审核但无版本快照，无法回滚 | 中 |
@@ -195,51 +195,66 @@ media_assets.item_id          → content_items.id   (可空)
 
 > 讽刺的是：**Go + PG 反而让这些变简单了**。MongoDB 单文档模型下这些点只能靠应用层保证，PG 有原生事务。
 
+**createChild 的具体修法**（不要只加事务，还要靠数据库保证）：
+
+```sql
+-- Node 的做法：先读 → 判断 → 再写（两个并发可同时通过判断）
+-- Go 的做法：条件更新，天然互斥
+UPDATE consent_records
+   SET child_id = $1, status = 'used'
+ WHERE id = $2 AND child_id IS NULL
+-- 影响行数 = 0 → 说明已被占用，返回 40900
+```
+
+配合 `consent_records` 上对 `child_id` 的条件唯一性，才能真正消除竞态。
+
 ---
 
-## 4. 迁移必须处理的现存缺陷（与选型无关）
+## 4. 现有系统的 5 个陷阱（Go 版必须避开）
 
-架构师核实代码时挖出**3 个当前就存在的隐患**，与是否迁移无关，但既然要做，建议一并修掉。
+> **重要**：用户已决定**不修改现有 Node 代码**，直接开发 Go 版。本章不是修代码清单，而是**Go 版实现时必须避开的坑** —— 架构调研时挖出来的真实缺陷，如果照抄进Go 会把bug 一起搬过去。
 
-### 4.1 限流键硬编码手机号（安全漏洞，最优先）
+### 4.1 限流键硬编码手机号
 
-**位置**：`middlewares/rateLimit.js:10-15`
+**现状**（`middlewares/rateLimit.js:10-15`）：
 
 ```js
 const phone = (ctx.req.body && ctx.req.body.phone) || '';
 return String(ip) + ':' + String(phone);
 ```
 
-**问题**：后台登录接口的请求体是 `{ account, password }`，**没有 `phone` 字段**。于是所有后台登录请求的限流键都退化成 `ip + ':' + ''` —— **所有后台账号共用一个限流桶**。
+**问题**：后台登录的请求体是 `{ account, password }`，**没有 `phone` 字段**。于是所有后台登录请求的限流键退化成 `ip + ':' + ''` —— **所有后台账号共用一个限流桶，撞库防护形同虚设，且不会报错**。
 
-**后果**：后台登录接口的撞库防护形同虚设，且**不会报错**，是隐蔽失效。
+**Go 版要求**：限流键用「IP + 账号标识」双维度，标识从**显式参数**传入而非猜body 里有什么字段。家长端用 `email`，后台用 `account`。
 
-**修法**：限流键改为「IP + 账号标识」双维度，后台用 `account`，家长端用后续的 `email`。
+### 4.2 后台登录只认手机号格式
 
-### 4.2 后台登录校验手机号格式
+**现状**（`validators/admin/schemas.js:51-53`）：字段名叫 `account`（暗示可传账号名），实际只允许手机号，传账号名直接 400。
 
-**位置**：`validators/admin/schemas.js:51-53`
-
-```js
-const account = reqString(body, 'account');
-if (!isValidPhone(account)) throw errors.badRequest('account must be a valid phone number');
-```
-
-**问题**：字段名叫 `account`（暗示可传账号名），实际只允许手机号。**传账号名直接 400**。
-
-**影响**：改邮箱认证后更严重 —— 若后台也要支持邮箱，这里必须同步改。
+**Go 版要求**：既然认证改邮箱，后台登录校验改为「邮箱或手机号均可」，**且与字段名语义一致**。
 
 ### 4.3 手机号脱敏对邮箱无效
 
-**位置**：`services/admin/adminAuth.service.js:47` 调用 `maskPhone()`（`utils/phone.js:22`）
+**现状**（`services/admin/adminAuth.service.js:47` 调 `maskPhone`，`utils/phone.js:22`）：正则 `(\d{3})\d+(\d{4})` 针对 11 位手机号，对邮箱**完全匹配不上，会原样返回明文**。
 
-**问题**：`maskPhone` 的正则 `(\d{3})\d+(\d{4})` 是针对 11 位手机号的。对邮箱输入**完全匹配不上，会原样返回明文邮箱**。
+**Go 版要求**：脱敏函数**按类型分派**（邮箱走 `maskEmail`，手机号走 `maskPhone`），并在测试中断言「输出不等于输入明文」。
 
-**后果**：日志/响应里出现明文邮箱。若不改，**等于没脱敏**。
+### 4.4 两处并发缺陷（check-then-act）
 
-### 4.4 另两个并发缺陷
+| 位置 | 现状 | Go 版要求 |
+|---|---|---|
+| `progress.repo.js:6-15` | upsert 是「先 findOne 再 insert」，两人同时上报同一 `(childId,itemId)` 会插两条 | **`UNIQUE(child_id, item_id)` + `INSERT ... ON CONFLICT DO UPDATE`** |
+| `progress.service.js:36-44` | 「首完徽章」是 findOne→create，并发下会发两次徽章 | **`UNIQUE(child_id, badge_key)`** |
 
-见 3.4 节：`progress_records` 与 `milestones` 缺唯一约束，PG 迁移时一并修。
+这两个是**当前就在的 bug**（与迁移无关）。Go 版靠 DDL 约束根治，不是靠代码判空。
+
+### 4.5 封面字段形态不一致
+
+**现状**：`db/schema.json:53` 定义 `content_items.cover` 为标量 cdnKey，但 `db/seed-content.js:32-33` 实际写入的是对象 `{ cdnKey, size }`。而 `contentAdmin.repo.js:66` 用标量等值匹配 —— **对种子数据会匹配失败**。
+
+**Go 版要求**：`content_items.cover` 定义为 **JSONB**，用`->>'cdnKey'` 提取，兼容两种形态。
+
+> 这 5 条已同步进第 3.4 / 3.5 章的风险与DDL 要求。**照抄 Node 逻辑会把这5 个 bug 一起搬到 Go**，这是本章存在的意义。
 
 ---
 
@@ -598,43 +613,343 @@ MEDIA_CDN_BASE_URL=https://dodokid.heymf.cn/media
 
 ---
 
-## 9. 先看清代价：重写 vs 改进现有
+## 9. 决策记录与风险登记册
 
-我必须诚实说明，**重写不一定更划算**：
+### 9.1 决策已定
 
-### 重写要付的账
-
-| 账项 | 说明 |
-|---|---|
-| **业务规则重实现风险** | 128 条断言锁住的规则要逐条重写，**每条都可能漏**。状态机少一条迁移、RBAC 少一个判role，都是线上事故 |
-| **契约漂移风险** | 69 个方法的手写 Go 实现可能与 `openapi.yaml` 有细微差异，**前端不做任何校验，静默出错** |
-| **15+ 人日** | 期间不能加新功能 |
-| **放弃已验证的部署方案** | systemd 版已写完文档能用；宝塔版刚写完 |
-
-### 不重写也能达成「部署简单」
-
-你的真实痛点是**部署麻烦**，这个有成本低得多的解法：
-
-| 方案 | 工作量 | 效果 |
+| 决策项 | 结论 | 依据 |
 |---|---|---|
-| **A. 现有宝塔版文档直接照做** | 0天 | 装MongoDB + 填 10 个环境变量。已写好的文档照做即可 |
-| **B. 宝塔 Node 项目补 `dotenv`** | 0.5 天 | 加个依赖，`.env` 就能生效，少填 8 个环境变量 |
-| **C. 打成单文件 + 嵌入存储（不改语言）** | 2-3 天 | Node 单文件编译（`pkg`/`node --build-sea`）+ SQLite，部署形态接近 Go |
-| **D. Go + PG 重写** | 15+ 天 | 部署最干净（少 7 个环境变量、SQL 可读、有图形化工具） |
+| 语言 | **Go** | 单二进制、无 node_modules、systemd 托管 |
+| 数据库 | **PostgreSQL**（曾评估嵌入式 badger，评估后推翻） | 保留关系模型与通用运维工具；见第 3 章 |
+| 前端 | **完全复用，零改动** | `grep cloudbase/tcb` 零命中；只依赖 openapi 契约 |
+| 认证 | **邮箱 + 密码**（替代手机号 + 短信码） | 免短信资质；海外发信正常；见第 5 章 |
+| 未验证邮箱 | **禁止登录** | 未验证即可登录 = 可用他人邮箱注册看其孩子数据 |
+| 部署 | **宝塔装 PG + systemd 托管二进制** | 环境变量 10 项 → 3 项 |
 
-**我的建议**：先按 A 把系统跑起来拿到真实反馈（你在服务器上立刻能验证前后端链路），**再决定要不要重写**。现在重写，你手里就只有一个没跑通过的部署和一个没上线的产品。
+完整决策记录见 `docs/decisions/ADR-007-go-postgresql-rewrite.md`。
 
-如果一定要重写，**请先回答**：
+### 9.2 风险登记册
 
-1. 现在的宝塔部署卡在哪一步？（具体报错/哪个面板字段找不到）
-2. 你预期月活量级？（若在万级以内，嵌入式足够；十万级以上建议真数据库）
-3. 是否需要多机扩容预案？
+按严重度排序。**前4 项是本次重写的真实失败模式**，不是泛泛而谈。
+
+| # | 风险 | 严重度 | 概率 | 触发条件 | 缓解措施 | 兜底 |
+|---|---|---|---|---|---|---|
+| **R1** | **契约漂移** —— 69 个方法手写 Go 与 `openapi.yaml` 有细微差异，**前端不做任何校验，静默出错** | **高** | 高 | 每个方法实现时 | ① 以 openapi.yaml 生成 Go 结构体与桩 ② 现有 128 条断言改造成 Go 契约测试 ③ P5 双跑逐方法比对响应体 | 保留 Node 版可随时切回（`DB_DRIVER` 不变，两套独立部署） |
+| **R2** | **业务规则漏实现** —— 状态机 9 条迁移少一条、RBAC 少一个 role 判断、C 端 published 过滤漏了| **高** | 中 | 逐条重实现时 | ① 附录 11.1 的状态机表逐条对照 ② 每个域完成即跑契约测试 ③ 代码评审专查「与 Node 版逐行diff」 | 同上 |
+| **R3** | **12 处事务改造不彻底** —— 尤其 deleteChild 跨 5 表，中途失败 = 合规风险 | **高** | 中 | P4.5 阶段 | ① 逐个列事务边界 ② 用 PG 的外键约束兜底部分一致性 ③ 补针对这 4 处高优先级的失败注入测试 | 保留 Node 版行为作为对照 |
+| **R4** | **建表字段反推不准** —— `schema.json` 有 10/19 集合零字段说明，实际存量数据可能含代码里没出现的字段 | 中 | **高** | P0 建表阶段 | ① 逐集合读 service 层的写入点反推 ② 上线前用真实数据跑一次导入校验 | 导入脚本遇未知字段打日志跳过，不静默丢弃 |
+| **R5** | 事务边界划分错误 —— repo 层隐式开事务导致边界不清 | 中 | 中 | P4.5 | 明确约定：**事务只在 service 层开**，repo 接收 `ctx` 中的 tx 句柄 | — |
+| **R6** | 两套密码哈希并存 —— `utils/password.js` bcrypt（≥8）与 `utils/crypto.js` PBKDF2（≥4，家长锁用）强度不一致 | 中 | 高 | 认证改造时 | Go 侧统一 bcrypt cost≥12；家长锁密码强度提到 ≥8 或统一走 bcrypt | — |
+| **R7** | pgx 依赖 CGO —— 构建环境缺 `libpq-dev` 导致编译失败 | 低 | 中 | 首次构建 | 文档已标注；CI 加安装步骤 | 用纯 Go 驱动替代 |
+| **R8** | 邮箱送达率 —— 第三方邮件服务配置不当导致验证邮件进垃圾箱 | 中 | 中 | 认证域联调 | ① 发件域名与站点同域 ② 优先用固定验证码跑通流程再接真实服务 | 联调期用固定验证码 |
+| **R9** | 双跑期运维成本翻倍 —— Go 与 Node 两套部署同时在线 | 低 | 高 | P5 阶段 | 双跑只跑测试流量，不接真实用户 | P5 时间压缩在1.5 天内 |
+
+### 9.3 失败后的退路
+
+**Node 版全链路保留，不删除。** 具体保留策略：
+
+| 资产 | 处置 |
+|---|---|
+| 现有 Node 代码 | **保留**，P5 稳定运行 2 周后再议 |
+| `openapi.yaml` | **两边都要用**，是唯一契约 |
+| `db/schema.json` | 保留，索引定义可参考 |
+| `tests/*.test.js`（128 断言） | **改造成 Go 契约测试** —— 这是 R1/R2 的主要防线，价值极高 |
+| 宝塔部署文档 | 保留，Node 版回退时直接用 |
+
+**切换是可逆的**：Go 版与 Node 版是两套独立部署，域名反代指向谁就生效谁。不需要数据迁移（Go 版从 seed 开始）。
+
+### 9.4 什么情况下应该中止重写
+
+诚实列出止损条件 —— 出现任一项，建议停下来重新评估：
+
+1. **P0 结束时表结构仍有大量字段不确定**（R4 命中）→ 说明对现有系统理解不够，先补调研
+2. **P4.5 事务改造发现更多未预期的事务需求点** → 工作量估算失效，重估
+3. **P5 双跑差异超过 5%** → 契约理解有系统性偏差，回退到 Node 版补 dotenv 方案
 
 ---
 
-## 10. 附录
+## 10. 契约基线（QA 产出，开发时以此逐条对照）
 
-### 10.1 状态机迁移表（Go 侧必须逐条对齐）
+### 10.1 必须先修的 3 项契约缺陷
+
+**这 3 项在动工前处理**，否则会把问题一起搬进 Go 版。
+
+#### 缺陷 1（阻断级）：6 个公开端点缺 operation 级 security
+
+`openapi.yaml:46` 有全局 `security: [{bearerAuth: []}]`，而以下 6 个公开端点**未声明** operation 级 `security: []`：
+
+| Method | Path | 实际应为 |
+|---|---|---|
+| POST | `/parent/sendSmsCode` | 公开 |
+| POST | `/parent/verifyCode` | 公开 |
+| POST | `/parent/register` | 公开 |
+| POST | `/parent/login` | 公开 |
+| GET | `/version` | 公开 |
+| GET | `/privacyPolicy` | 公开 |
+
+**证据**：`/admin/auth/login` 正确写了 `security: []`（openapi.yaml:884 附近），说明作者知道怎么写，这 6 处是漏写。实现侧 `routes.js:33-53`、`220-228` 确实无 auth 中间件，**是公开的**。
+
+**后果**：任何 OpenAPI 代码生成器都会给「登录接口」生成"必须先带 token"的客户端。Go 版若用 `oapi-codegen` 生成客户端，**会直接引入 P0 缺陷**。
+
+**修法**：为这 6 个操作补 `security: []`。
+
+#### 缺陷 2（阻断级）：refreshToken 签发了但无兑换端点
+
+- `services/auth.service.js:23-26` **确实签发**了 `refreshToken`（TTL 7 天）
+- 但 69 个方法中**无任何 refresh 路径**（`grep refresh routes.js` 零命中）
+- `middlewares/auth.js:28` 与 `adminAuth.js:28` **主动拒绝** `type=refresh` 的令牌
+
+**后果**：家长端 `accessToken` 15 分钟过期（`config.js:29` `JWT_ACCESS_TTL_SEC=900`）后，**只能重新走短信验证码**，无法静默续期。这是**功能缺失**，不是 bug。
+
+**修法**：Go 版**必须新增**两个端点（双 audience 各自签发）：
+
+```
+POST /parent/auth/refresh   # body: { refreshToken }
+POST /admin/auth/refresh    # body: { refreshToken }
+```
+
+> **注意**：这是**新增契约**，不是保持不变。且要与前端约定 —— 前端目前有 refresh token 存储逻辑吗？需确认（`dodokid/src/api/token.ts`）。
+
+#### 缺陷 3（文档级）：同意凭证的描述与代码不符
+
+已修正 —— 见 3.5 节。真实缺陷是**并发竞态**（先读后写、无条件更新），不是"可重复使用"。
+
+#### 另有 2 个 openapi 未记录的路由
+
+| Method | Path | 位置 | 性质 |
+|---|---|---|---|
+| GET | `/health` | `server.js:79` | 部署探针 |
+| GET | `/media/*` | `server.js:47` | 本地媒体分发（local 驱动默认读路径） |
+
+前端不依赖这两个，但**部署验收探针与媒体分发依赖它们**。建议明确标注为「部署面，非契约面」，或补进 openapi。
+
+### 10.2 端点完整清单（69 个方法，来自 openapi.yaml 解析）
+
+认证分类：**公开 7 / 家长 22 / 家长+gateToken 2 / 后台 38**
+
+> `gateToken` 单独列出：`/parent/settings` 与 `/parent/settings/timeLimit` 是**双锁**（bearerAuth + `X-Gate-Token`）。Go 版漏掉 gate 中间件 = 后台护眼设置裸奔。
+
+#### 公开端点（7）
+
+| # | Method | Path | 功能 |
+|---|---|---|---|
+| 1 | POST | `/admin/auth/login` | 运营后台登录（账号+密码，签发 aud=admin） |
+| 2 | POST | `/parent/login` | 家长登录（**Go 版改为邮箱+密码**） |
+| 3 | POST | `/parent/register` | 家长注册（**Go 版改为邮箱+密码**） |
+| 4 | POST | `/parent/sendSmsCode` | 下发验证码（**Go 版废弃**，替换为邮箱验证） |
+| 5 | POST | `/parent/verifyCode` | 校验验证码（**Go 版废弃**） |
+| 6 | GET | `/privacyPolicy` | 隐私政策引用地址 |
+| 7 | GET | `/version` | 版本号 + `mediaBaseUrl` |
+
+#### 家长端（22 + 2 双锁）
+
+| # | Method | Path | 功能 |
+|---|---|---|---|
+| 8 | POST | `/child/create` | 凭有效监护同意创建儿童档案 |
+| 9 | GET | `/child/list` | 列出本家长名下儿童 |
+| 10 | POST | `/child/switch` | 切换当前激活儿童 |
+| 11 | DELETE | `/child/{id}` | 删除儿童（**级联 5 表事务**） |
+| 12 | GET | `/child/{id}` | 儿童档案详情 |
+| 13 | PUT | `/child/{id}` | 更新儿童（仅 name/avatar/ageGroup） |
+| 14 | POST | `/consent/record` | 记录监护同意凭证 |
+| 15 | GET | `/content/categories` | 内容模块分类 |
+| 16 | GET | `/content/list` | 按模块与年龄段列内容（**仅 published**） |
+| 17 | GET | `/content/samples` | 试读样章（最多 10 条） |
+| 18 | GET | `/content/search` | 按标题搜索（**仅 published**） |
+| 19 | GET | `/content/{id}` | 内容详情 + 媒体资源 |
+| 20 | GET | `/content/{id}/mediaUrl` | 媒体可访问地址 |
+| 21 | POST | `/feedback` | 提交反馈 |
+| 22 | GET | `/milestones/{childId}` | 已获徽章 |
+| 23 | POST | `/parent/gate/setup` | 设置家长门 |
+| 24 | POST | `/parent/gate/verify` | 校验家长门，签发 gateToken |
+| 25 | POST | `/parent/logout` | 吊销当前令牌 jti |
+| 26 | PUT | `/preferences` | 更新偏好（语言/主题） |
+| 27 | GET | `/progress/{childId}` | 进度汇总（含完成率） |
+| 28 | PUT | `/progress/{childId}` | 上报进度（**幂等 upsert**） |
+| 29 | GET | `/progress/{childId}/list` | 全部进度记录 |
+| 30 | GET | `/parent/settings` | 家长设置（**双锁**） |
+| 31 | PUT | `/parent/settings/timeLimit` | 护眼时长（**双锁**） |
+
+#### 管理后台（38）
+
+| # | Method | Path | 功能 | 角色 |
+|---|---|---|---|---|
+| 32 | GET | `/admin/audit` | 审计日志（仅 admin） | admin |
+| 33 | POST | `/admin/auth/logout` | 吊销运营令牌 | editor+ |
+| 34 | GET | `/admin/auth/me` | 当前运营身份与权限 | editor+ |
+| 35 | GET | `/admin/categories` | 列出分类 | editor+ |
+| 36 | POST | `/admin/categories` | 创建分类 | **admin** |
+| 37 | DELETE | `/admin/categories/{id}` | 删除分类 | **admin** |
+| 38 | PUT | `/admin/categories/{id}` | 更新分类 | **admin** |
+| 39 | GET | `/admin/contents` | 内容列表（全状态+筛选分页） | editor+ |
+| 40 | POST | `/admin/contents` | 创建内容（初始 draft） | editor+ |
+| 41 | DELETE | `/admin/contents/{id}` | 删除内容 | **admin** |
+| 42 | GET | `/admin/contents/{id}` | 内容详情 + 媒体 | editor+ |
+| 43 | PUT | `/admin/contents/{id}` | 更新内容（**version 乐观锁**） | editor+ |
+| 44 | POST | `/admin/contents/{id}/approve` | 审核通过（in_review→published） | **admin** |
+| 45 | POST | `/admin/contents/{id}/archive` | 归档（→archived） | **admin** |
+| 46 | POST | `/admin/contents/{id}/duplicate` | 复制为新草稿 | editor+ |
+| 47 | GET | `/admin/contents/{id}/preview` | 按 C 端口径预览 | editor+ |
+| 48 | POST | `/admin/contents/{id}/publish` | 草稿直发（draft→published） | **admin** |
+| 49 | POST | `/admin/contents/{id}/reject` | 审核驳回（→draft） | **admin** |
+| 50 | POST | `/admin/contents/{id}/restore/{revisionId}` | 回滚到指定修订 | **admin** |
+| 51 | GET | `/admin/contents/{id}/revisions` | 修订历史（不含快照体） | editor+ |
+| 52 | POST | `/admin/contents/{id}/submit` | 提交送审（draft→in_review） | editor+ |
+| 53 | POST | `/admin/contents/{id}/unpublish` | 下架（published→archived） | **admin** |
+| 54 | POST | `/admin/contents/{id}/withdraw` | 撤回送审（in_review→draft） | editor+ |
+| 55 | GET | `/admin/media` | 媒体列表（可筛选） | editor+ |
+| 56 | POST | `/admin/media` | 签发直传凭证 + 落库元数据 | editor+ |
+| 57 | PUT | `/admin/media/blob` | 接收直传二进制（**原始字节**） | editor+ |
+| 58 | DELETE | `/admin/media/{id}` | 删除媒体 | **admin** |
+| 59 | GET | `/admin/media/{id}` | 媒体详情 | editor+ |
+| 60 | GET | `/admin/modules` | 列出模块（含禁用） | editor+ |
+| 61 | POST | `/admin/modules` | 创建模块 | **admin** |
+| 62 | DELETE | `/admin/modules/{id}` | 删除模块 | **admin** |
+| 63 | PUT | `/admin/modules/{id}` | 更新模块 | **admin** |
+| 64 | GET | `/admin/settings` | 读取后台设置 | **admin** |
+| 65 | PUT | `/admin/settings` | 更新后台设置 | **admin** |
+| 66 | GET | `/admin/stats` | 概览统计 | editor+ |
+| 67 | GET | `/admin/users` | 列出运营账号（不含家长） | editor+ |
+| 68 | PUT | `/admin/users/{id}/role` | 变更角色 | **admin** |
+| 69 | PUT | `/admin/users/{id}/status` | 启用/停用账号 | **admin** |
+
+**一致性已核实**：用脚本把 openapi 的 69 个 `(method, path)` 与 `routes.js`(30) + `admin.routes.js`(39) 做双向集合 diff，**差集均为空**，69/69 精确匹配。69 个 `operationId` 全唯一。
+
+### 10.3 响应契约（Go 版必须逐字对齐）
+
+统一信封：
+
+```json
+{ "success": true, "code": 0, "message": "ok", "data": { } }
+```
+
+| code | 含义 | HTTP（自托管形态） |
+|---|---|---|
+| 0 | 成功 | 200 |
+| 40000 | 校验失败 | 400 |
+| 40100 | 未授权 | 401 |
+| 40300 | 禁止 / RBAC | 403 |
+| 40400 | 未找到 | 404 |
+| 40900 | 冲突（状态或版本） | 409 |
+| 42900 | 限流 | 429 |
+
+**HTTP 状态映射规则**（`server.js:73-77`）：`floor(code/100)` 落在 400-599 则取之，否则 500。Go 版若也自托管需复刻。
+
+### 10.4 验收标准（EARS 格式，QA 产出）
+
+> **注意**：以下标准按**当前实现**写（手机号+短信码）。Go 版把认证改成邮箱+密码时，A 组需同步调整 —— 但**安全语义不变**。
+
+#### A. 认证
+
+| 编号 | EARS 标准 |
+|---|---|
+| A1 | While 家长提交合法凭据申请注册，系统必须 创建 `role=parent` 账号并返回 `{user, tokens}`，且用户对象中联系方式必须脱敏 |
+| A2 | If 该标识已注册，系统必须 返回 `code=40900`，且不得返回任何令牌 |
+| A3 | While 家长提交合法凭据申请登录，系统必须 返回 `{user, tokens}`，accessToken 含 `aud=app`、TTL 900 秒 |
+| A4 | If 凭据不存在、已过期或已消费，系统必须 返回 `code=40000`，且不得透露三种情形的差异 |
+| A5 | While 家长凭据未验证成功，系统必须 拒绝其获取业务令牌（**Go 版：邮箱未验证禁止登录**） |
+| A6 | If 使用不存在的账号登录后台，系统必须 返回与「密码错误」**完全相同**的 `code` 与 `message`（防账号枚举） |
+| A7 | While 任一 accessToken 访问受保护端点，系统必须 先校验签名与 exp，再校验 jti 是否在吊销名单，最后放行 |
+| A8 | While 令牌 `type=refresh`，系统必须 拒绝其访问任何业务端点并返回 40100 |
+| A9 | While 用户已登出，系统必须 使该 accessToken 后续请求返回 40100（jti 吊销即刻生效） |
+| A10 | While 家长令牌（`aud=app`）访问任一 `/admin/*`，系统必须 返回 40100 |
+| A11 | While 运营令牌（`aud=admin`）访问任一 C 端端点，系统必须 返回 40100 |
+| A12 | If 运营账号 `status=disabled`，系统必须 在下一次请求即返回 40100（**每次请求查库**，不靠令牌内快照） |
+| A13 | While 连续请求登录或发码超阈值，系统必须 返回 `code=42900` |
+
+#### B. 儿童档案
+
+| 编号 | EARS 标准 |
+|---|---|
+| B1 | While 家长提交未被占用、未过期的 consentId 与合法信息，系统必须 创建档案、置同意为 `status=used` 并写入 childId |
+| B2 | If consentId 不存在，系统必须 返回 40000 |
+| B3 | If 同意记录 `expiresAt` 已过期，系统必须 返回 40000 |
+| B4 | If ageGroup 不属于 `{3-4, 4-6}`，系统必须 返回 40000 |
+| B5 | While 两个并发请求携带**同一** consentId，系统必须 至多一个成功，另一个返回 40900（**须由条件更新或唯一约束保证**） |
+| B6 | While 家长操作自己名下儿童，系统必须 放行 |
+| B7 | While 家长操作他人名下 childId，系统必须 返回 40300，且响应体不得包含该儿童任何字段 |
+| B8 | While 家长删除儿童，系统必须 **在同一事务内**删除 `child_profiles`/`progress_records`/`milestones`，并将该儿童全部 `consent_records` 置为 `revoked`+`revokedAt` |
+| B9 | If childId 不存在，系统必须 返回 40300（与「不归属」同码，避免存在性侧信道） |
+| B10 | While 更新儿童档案，系统必须 仅接受 name/avatar/ageGroup，其余字段必须被忽略而非报错 |
+
+#### C. 内容状态机（9 条迁移逐条为验收单位）
+
+| 编号 | EARS 标准 |
+|---|---|
+| C1 | While draft + editor+，系统必须 允许 submit → in_review，version+1 并写修订快照 |
+| C2 | While draft + admin，系统必须 允许 publish 直发 → published，写 publishedAt/reviewerId/快照 |
+| C3 | While in_review + admin，系统必须 允许 approve → published |
+| C4 | While in_review + admin，系统必须 允许 reject → draft，快照 reason |
+| C5 | While in_review + editor+，系统必须 允许 withdraw → draft，**清空 reviewerId**、version+1 但**不写快照** |
+| C6 | While published + admin，系统必须 允许 unpublish → archived |
+| C7 | While draft/in_review/published + admin，系统必须 允许 archive → archived |
+| C8 | While archived + editor+ 提交 PUT，系统必须 先自动 reEdit → draft 再应用修改 |
+| C9 | While admin 提交 restore，系统必须 以目标快照为新副本、状态置 draft、清空 publishedAt/reviewerId、version+1，且**历史只追加不改写** |
+| C10 | If 迁移不在当前状态的合法集合内，系统必须 返回 40900，并在 data 中回传 `currentStatus` 与 `allowedActions` |
+| C11 | If 携带的 version 与服务端不一致，系统必须 返回 40900 并回传 `currentVersion` |
+| C12 | If 携带的 `expectedVersion` 不匹配（publish 路径），系统必须 返回 40900 |
+| C13 | While 内容处于 in_review，系统必须 拒绝任何 PUT 编辑并返回 40900 |
+| C14 | While editor 提交带 `isSample` 的请求，系统必须 返回 40300（**该字段仅 admin 可写**） |
+| C15 | While C 端调用 list/search/getItem/samples，系统必须 **只返回 status=published**；非 published 一律按「不存在」返回 40400 |
+| C16 | If editor 调用 approve/reject/unpublish/archive/delete 或改角色与状态，系统必须 返回 40300 |
+
+#### D. 媒体
+
+| 编号 | EARS 标准 |
+|---|---|
+| D1 | While 运营者请求上传凭证，系统必须 **先落库元数据再返回直传目标**（AC-12：元数据先于字节到达而存在） |
+| D2 | While 直传字节抵达 blob 端点，系统必须 以**临时文件 + 原子 rename** 落盘，禁止半截文件被读到 |
+| D3 | If key 规范化后越出媒体根目录（含 `../` 与**同前缀绕过**如 `../media-evil`），系统必须 返回 40000 |
+| D4 | If 请求体为空，系统必须 返回 40000 |
+| D5 | If 超过 `mediaMaxSizeMB`（默认 50），系统必须 返回 40000 |
+| D6 | If MIME 不在白名单内，系统必须 返回 40000 |
+| D7 | While 后台完成上传与发布，系统必须 使 C 端可通过 `/content/{id}/mediaUrl` 拿到地址并成功读取 |
+| D8 | While 通过公开读路径访问媒体，系统必须 返回 200 且带 `max-age=31536000, immutable` 强缓存头 |
+| D9 | While 通过公开读路径访问不存在的文件，系统必须 返回 40400 |
+
+#### E. 护眼
+
+| 编号 | EARS 标准 |
+|---|---|
+| E1 | While 家长通过家长门修改时长与模式，系统必须 持久化并在读回时原样返回 |
+| E2 | If 未携带有效 gateToken 访问或修改护眼设置，系统必须 返回 40300 |
+| E3 | While 累计使用时长达到 `dailyLimitMin`，系统必须 **立即中断并锁定界面**（strict 模式不得延迟） |
+| E4 | Where 护眼设置为 strict，系统必须 在达到上限时不提供任何绕过入口 |
+| E5 | While 在后台/家长端任一侧修改，系统必须 两侧读到同一份值（单一数据源 `parental_settings`） |
+| E6 | While App 冷启动，系统必须 从 `parental_settings` 拉取上限值，使中断逻辑**首次会话即生效** |
+
+> E3/E6 的超时判定目前由**客户端**承担（API 中无中断端点），Go 版保持此分工。但这两条**必须由前端自动化测试覆盖**，不列入后端契约。
+
+#### F. 进度
+
+| 编号 | EARS 标准 |
+|---|---|
+| F1 | While 同一 `childId+itemId` 重复上报，系统必须 只更新同一条记录，不得产生第二条 |
+| F2 | If 两个并发请求同时上报同一 `childId+itemId`，系统必须 最终仅一条记录（**依赖 UNIQUE + ON CONFLICT**） |
+| F3 | If score 越界（<0 或 >100）或非数字，系统必须 返回 40000 |
+| F4 | If status 不属于三种枚举，系统必须 返回 40000 |
+| F5 | While 状态变更为 completed，系统必须 至多授予**一枚** first_complete 徽章 |
+| F6 | If 并发完成多个条目，系统必须 仍只授予一枚（唯一约束保证） |
+| F7 | While 读取进度汇总，系统必须 返回 total/completed/inProgress/notStarted 四项计数，`completionRate = 四舍五入(completed/total*100)`，total=0 时为 0 |
+| F8 | While 家长读取他人儿童的进度，系统必须 返回 40300 |
+
+### 10.5 契约测试策略
+
+1. **契约冻结**：以 `openapi.yaml` 为唯一基准，加两条 CI 卡口 —— `spectral lint`（禁 security 缺失等）与 `oapi-codegen validate`。**先修掉 10.1 的 6 处 security 缺失再冻结**，否则生成器会产出错误客户端。
+
+2. **实现一致性卡口**：用 `oapi-codegen` 生成 Go 的路由与 DTO，写表驱动测试 `TestRouteTableMatchesOpenAPI` —— 读 openapi.yaml 遍历 69 个 `(method, path)`，逐一比对 Go 路由表，缺失即失败。**这条直接防「漏实现」和「多实现」**。
+
+3. **128 条现有断言改造成 Go 基准**：三个测试文件全是纯手写 `check(name, cond)`（无框架依赖），运行时实测 57+29+42 = **128 全绿**。路径：保留 `tests/fixtures/admin-seed.json` 作为黄金夹具，把每个 check 逐条翻译为 Go 的 `testing.T` 断言，落到 `tests/contract/{smoke_admin, smoke_routes, selfhost}_test.go`。**要求逐条对应、断言数不少于 128**，作为回归底线。
+
+4. **双跑比对响应体**：起 Node(3000) 与 Go(3001)，对同一夹具库发同样请求，比对 ①业务 code ②脱敏后的 data JSON（抹掉 token/jti/时间戳/UUID）③HTTP 状态码。差异分三档：**阻断**（code 或字段缺失）/ **告警**（字段顺序、空数组 vs null）/ **忽略**（随机与时间类）。**连续 N 轮零阻断差异方可切流**。
+
+5. **竞态补集成测试**：用 `go test -race` + `httptest` 覆盖 C2/C7/F2/F6 这类竞态 —— **这是 Node 单进程 fake-db 测不出来的，也是本次迁移的主要收益**。
+
+---
+
+## 11. 附录
+
+### 11.1 状态机迁移表（Go 侧必须逐条对齐）
 
 ```go
 var Transitions = map[string]Transition{
@@ -650,7 +965,7 @@ var Transitions = map[string]Transition{
 }
 ```
 
-### 10.2 迁移退路（保留可逆性）
+### 11.2 迁移退路（保留可逆性）
 
 Go 版跑通后，若存储引擎不合适，导出路径：
 
@@ -660,7 +975,7 @@ PostgreSQL → 导出器（Go CLI 子命令） → MongoDB / 其他库
 
 因为仓储层是接口化的，换引擎只需实现另一个 `repo` 包 + 跑导出器。**这条退路从P0 就要留好，不要等到出问题才补。**
 
-### 10.3 现有 Node 版资产处置
+### 11.3 现有 Node 版资产处置
 
 Go 版上线后，Node 版**不要立刻删**：
 
