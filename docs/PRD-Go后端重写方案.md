@@ -171,9 +171,27 @@ media_assets.item_id          → content_items.id   (可空)
 |---|---|---|---|
 | **`progress_records` 缺唯一约束** | `progress.repo.js:6-15` | upsert 是「先 find 再 insert」的应用层竞态，两人同时上报同一 (childId,itemId) 会插两条脏数据 | 加 `UNIQUE(child_id, item_id)`，改 `INSERT ... ON CONFLICT DO UPDATE` |
 | **`milestones` 缺唯一约束** | `progress.service.js:36-44` | 「首完徽章」是 findOne→create 的 check-then-act，并发下会发两次徽章 | 加 `UNIQUE(child_id, badge_key)` |
-| **`content_items.cover` 字段形态不一致** | `schema.json:53` 定义为标量 cdnKey，但 `seed-content.js:32-33` 写入的是对象 `{cdnKey,size}` | `contentAdmin.repo.js:66` 用标量等值匹配，对种子数据匹配失败 | 定义为 `JSONB` 兼容两种形态 |
+| **`content_items.cover` 在 schema 与 seed 间语义不一致** | `schema.json:53` 定义为标量 cdnKey，但 `seed-content.js:32` 源数据里是对象 `{cdnKey,size}` | `contentAdmin.repo.js:66` 的 `countPublishedReferringCover` 用标量等值匹配，语义对不上 | **定为 `TEXT`（存标量 cdn_key）**；源数据里的对象形态由 seed 转换。见下方「关于 cover 的更正」 |
 
 > 前两条是**真实 bug**，不是迁移引入的。借迁移机会修掉是对的。
+
+#### 关于 `cover` 的更正（我此前的判断有误）
+
+我上一轮说「seed 写入的是对象 `{cdnKey,size}`，导致 `contentAdmin.repo.js:66` 匹配失败」。**这个判断错了**，核实后更正：
+
+- `db/seed-content.js:32` 的 `cover: { cdnKey, size }` 写在**源数据对象**里
+- 但 `upsertItem`（`db/seed-content.js:75-88`）构造 `doc` 时**根本没把 cover 写进 content_items**
+- 所以 `content_items.cover` **现有存量数据里全是 NULL/缺省**，根本不存在「形态不一致的数据」
+
+**真正的语义分歧在 schema 与源数据之间**：`schema.json:53` 说 cover 是标量 cdnKey，源数据是对象，二者对不上。Go 版以 `schema.json` 为准，定义为 `TEXT`，由 seed 脚本做形态转换。
+
+#### 另一个 seed 数据缺陷（Node 版既有）
+
+`db/seed-content.js` 用了 6 处 `type: 'task'`，但 `validators/admin/schemas.js:9` 的 `CONTENT_TYPES = ['book', 'song', 'habit']` **不含 `task'`**。
+
+**后果**：用这批种子数据创建的内容，后台再编辑会触发 400 校验失败。
+
+**Go 版处置**：`0002_seed.sql` 已把 6 处 `'task'` 改为合法的 `'habit'`（该模块本就是生活习惯类），与校验器对齐。
 
 ### 3.5 事务：当前零使用，PG 是净收益
 
@@ -944,6 +962,77 @@ POST /admin/auth/refresh    # body: { refreshToken }
 4. **双跑比对响应体**：起 Node(3000) 与 Go(3001)，对同一夹具库发同样请求，比对 ①业务 code ②脱敏后的 data JSON（抹掉 token/jti/时间戳/UUID）③HTTP 状态码。差异分三档：**阻断**（code 或字段缺失）/ **告警**（字段顺序、空数组 vs null）/ **忽略**（随机与时间类）。**连续 N 轮零阻断差异方可切流**。
 
 5. **竞态补集成测试**：用 `go test -race` + `httptest` 覆盖 C2/C7/F2/F6 这类竞态 —— **这是 Node 单进程 fake-db 测不出来的，也是本次迁移的主要收益**。
+
+---
+
+### 10.6 建表迁移已产出（P0 的一部分已完成）
+
+`dodokid-go/migrations/` 三个文件已落盘：
+
+| 文件 | 行数 | 内容 |
+|---|---|---|
+| `0001_init.sql` | 299 | 18 张表 + 表内约束 |
+| `0002_seed.sql` | 262 | 种子数据（含音频示例） |
+| `0003_indexes.sql` | 82 | 23 个显式索引 |
+
+**实测数字**（我按文件核对，非估算）：**18 表 / 10 外键 / 23 独立索引 / 2 处UNIQUE**
+
+### 关键设计决策（偏离 schema.json 之处均有依据）
+
+| 决策 | 内容 | 依据 |
+|---|---|---|
+| `id TEXT PRIMARY KEY` | **不用 UUID/UUID 类型** | 前端缓存与 URL 里已有 24 位 hex，保持一致 |
+| 时间列 `TIMESTAMPTZ NOT NULL DEFAULT now()` | **不用 TIMESTAMP** | 项目全局约定 UTC |
+| 布尔列用 `CHAR(1) CHECK (col IN ('Y','N'))` | 不用 `BOOLEAN` | CloudBase 布尔是 int/string 混合，强制 'Y'/'N' 可避开往返歧义；代价是需用 `(col = 'Y')` 过滤 |
+| 雪花 ID 生成器 | `BIGINT` + 应用侧生成 | 1 位符号 + 41 位毫秒 + 10 位随机 = 52 位；**迁移期可能与 Node 版历史 ID 冲突**，故新增集合（`email_verification_tokens`）可用随机 24 hex |
+| **9 个字段重命名** | 避开 PG 保留字 | `order`→`sort_order`、`limit`→`page_size`、`desc`→`sort_desc`、`version`→`version_no`、`type`→`content_type` 等。**对照 openapi 时需按此映射** |
+| 索引名加表前缀 | `idx_progress_records_child_id` | schema.json 里有跨集合重名索引（`idx_childId` 出现多次） |
+| `content_items.cover` 定为 `TEXT` | 不用 JSONB | 见 3.4 的更正说明 |
+| `media_assets.folder` 加 CHECK IN 白名单 | | 与 `validators/admin/schemas.js:12` 的 `MEDIA_FOLDERS` 对齐 |
+| 无 `content_tags` 表 | | 死集合，代码零引用 |
+| `CHECK (status <> 'in_review' OR version_no > 0)` | | 守住「version 必须为正整数」这条契约 |
+
+### 两处偏离任务书的地方（架构师主动纠正）
+
+| 任务书原要求 | 实际改为 | 原因 |
+|---|---|---|
+| `cover` 用 JSONB | `TEXT` | 核实后我此前的判断有误，见 3.4 更正 |
+| 新增 7 处外键 | **10 处** | 多出 3 处来自 `preferences`/`parental_settings`/`email_verification_tokens` 的 `user_id`，均有 `ON DELETE CASCADE` 语义 |
+
+### 外键明细（10 处）
+
+```
+child_profiles.user_id         → users(id)              ON DELETE CASCADE
+consent_records.child_id       → child_profiles(id)ON DELETE SET NULL
+consent_records.user_id        → users(id)              ON DELETE CASCADE
+progress_records.child_id      → child_profiles(id)     ON DELETE CASCADE
+milestones.child_id            → child_profiles(id)     ON DELETE CASCADE
+parental_settings.user_id      → users(id)              ON DELETE CASCADE
+preferences.user_id            → users(id)              ON DELETE CASCADE
+media_assets.item_id           → content_items(id)      ON DELETE SET NULL
+content_revisions.content_id   → content_items(id)      ON DELETE CASCADE
+email_verification_tokens.user_id → users(id)            ON DELETE CASCADE
+```
+
+> **`ON DELETE CASCADE` 是重大行为变更**（Node 版是手写顺序删）。风险：删`users` 会连带删 `content_revisions`，而**审计记录不应随内容删除而消失**。建议 `content_revisions.author_id` 故意**不设外键**（历史只追加、不因用户删除而丢失），架构师已在文件中留注释标记此风险。
+
+### 本机未实测执行 SQL
+
+本机**无 psql 也无 Docker**，三个文件只做了括号配平与语句收尾检查，**未在真实 PostgreSQL 上跑过**。**部署前必须实测**：
+
+```bash
+createdb dodokid_test
+psql -d dodokid_test -f migrations/0001_init.sql
+psql -d dodokid_test -f migrations/0002_seed.sql
+psql -d dodokid_test -f migrations/0003_indexes.sql
+```
+
+### 两处已知不完整
+
+| 项 | 现状 | 何时补 |
+|---|---|---|
+| `base.repo.js` 的 `findOneWhere` / `countWhere` **未实现** | DDL 只定义了表，仓储基类尚未编码 | P0 后续 |
+| 雪花 ID 与 Node 历史 ID 可能冲突 | 新集合可用随机 hex；已有集合建议用随机 24 hex | 迁移时验证 |
 
 ---
 
