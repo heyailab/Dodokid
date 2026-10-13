@@ -655,7 +655,7 @@ MEDIA_CDN_BASE_URL=https://dodokid.heymf.cn/media
 | **R1** | **契约漂移** —— 69 个方法手写 Go 与 `openapi.yaml` 有细微差异，**前端不做任何校验，静默出错** | **高** | 高 | 每个方法实现时 | ① 以 openapi.yaml 生成 Go 结构体与桩 ② 现有 128 条断言改造成 Go 契约测试 ③ P5 双跑逐方法比对响应体 | 保留 Node 版可随时切回（`DB_DRIVER` 不变，两套独立部署） |
 | **R2** | **业务规则漏实现** —— 状态机 9 条迁移少一条、RBAC 少一个 role 判断、C 端 published 过滤漏了| **高** | 中 | 逐条重实现时 | ① 附录 11.1 的状态机表逐条对照 ② 每个域完成即跑契约测试 ③ 代码评审专查「与 Node 版逐行diff」 | 同上 |
 | **R3** | **12 处事务改造不彻底** —— 尤其 deleteChild 跨 5 表，中途失败 = 合规风险 | **高** | 中 | P4.5 阶段 | ① 逐个列事务边界 ② 用 PG 的外键约束兜底部分一致性 ③ 补针对这 4 处高优先级的失败注入测试 | 保留 Node 版行为作为对照 |
-| **R4** | **建表字段反推不准** —— `schema.json` 有 10/19 集合零字段说明，实际存量数据可能含代码里没出现的字段 | 中 | **高** | P0 建表阶段 | ① 逐集合读 service 层的写入点反推 ② 上线前用真实数据跑一次导入校验 | 导入脚本遇未知字段打日志跳过，不静默丢弃 |
+| **R4** | **建表字段反推不准** —— `schema.json` 有 10/19 集合零字段说明 | ~~中~~ **低** | ~~高~~ **已验证** | ~~P0 建表阶段~~ | **DDL 已在 PG 18.1 实测通过**（18 表/10 外键/50 索引，约束行为全部生效），见 10.6。残余风险仅为「存量数据含代码未出现的字段」，需真实数据导入时校验 | 导入脚本遇未知字段打日志跳过，不静默丢弃 |
 | **R5** | 事务边界划分错误 —— repo 层隐式开事务导致边界不清 | 中 | 中 | P4.5 | 明确约定：**事务只在 service 层开**，repo 接收 `ctx` 中的 tx 句柄 | — |
 | **R6** | 两套密码哈希并存 —— `utils/password.js` bcrypt（≥8）与 `utils/crypto.js` PBKDF2（≥4，家长锁用）强度不一致 | 中 | 高 | 认证改造时 | Go 侧统一 bcrypt cost≥12；家长锁密码强度提到 ≥8 或统一走 bcrypt | — |
 | **R7** | pgx 依赖 CGO —— 构建环境缺 `libpq-dev` 导致编译失败 | 低 | 中 | 首次构建 | 文档已标注；CI 加安装步骤 | 用纯 Go 驱动替代 |
@@ -985,7 +985,7 @@ POST /admin/auth/refresh    # body: { refreshToken }
 | 时间列 `TIMESTAMPTZ NOT NULL DEFAULT now()` | **不用 TIMESTAMP** | 项目全局约定 UTC |
 | 布尔列用 `CHAR(1) CHECK (col IN ('Y','N'))` | 不用 `BOOLEAN` | CloudBase 布尔是 int/string 混合，强制 'Y'/'N' 可避开往返歧义；代价是需用 `(col = 'Y')` 过滤 |
 | 雪花 ID 生成器 | `BIGINT` + 应用侧生成 | 1 位符号 + 41 位毫秒 + 10 位随机 = 52 位；**迁移期可能与 Node 版历史 ID 冲突**，故新增集合（`email_verification_tokens`）可用随机 24 hex |
-| **9 个字段重命名** | 避开 PG 保留字 | `order`→`sort_order`、`limit`→`page_size`、`desc`→`sort_desc`、`version`→`version_no`、`type`→`content_type` 等。**对照 openapi 时需按此映射** |
+| **仅 `order` 重命名** | 避开 PG 保留字 | `order`→`sort_order`。**实测确认 `type`/`version`/`limit`/`desc` 均非 PG 保留字，无需重命名**（见下方实测记录） |
 | 索引名加表前缀 | `idx_progress_records_child_id` | schema.json 里有跨集合重名索引（`idx_childId` 出现多次） |
 | `content_items.cover` 定为 `TEXT` | 不用 JSONB | 见 3.4 的更正说明 |
 | `media_assets.folder` 加 CHECK IN 白名单 | | 与 `validators/admin/schemas.js:12` 的 `MEDIA_FOLDERS` 对齐 |
@@ -1016,16 +1016,38 @@ email_verification_tokens.user_id → users(id)            ON DELETE CASCADE
 
 > **`ON DELETE CASCADE` 是重大行为变更**（Node 版是手写顺序删）。风险：删`users` 会连带删 `content_revisions`，而**审计记录不应随内容删除而消失**。建议 `content_revisions.author_id` 故意**不设外键**（历史只追加、不因用户删除而丢失），架构师已在文件中留注释标记此风险。
 
-### 本机未实测执行 SQL
+### 已在真实 PostgreSQL 上实测通过（PG 18.1）
 
-本机**无 psql 也无 Docker**，三个文件只做了括号配平与语句收尾检查，**未在真实 PostgreSQL 上跑过**。**部署前必须实测**：
+用 `scripts/verify_ddl.py` 在真实库上跑完整验证，**不是静态检查**：
+
+| 验证项 | 结果 |
+|---|---|
+| 三个文件按0001→0003→0002 顺序执行 | **全部成功**，无语法错误 |
+| 建出的结构 | **18 表 / 10 外键 / 50 索引 / 9 表级 UNIQUE** |
+| `citext` 扩展安装 | 成功（PG 18.1 需 `CREATE EXTENSION`，文件已含） |
+| 种子数据落库 | content_modules 3 行、content_items 8 行、media_assets 10 行、admin_settings 1 行 |
+
+**约束行为实测**（真实插入违规数据，看是否被拒）：
+
+| 测试 | 结果 |
+|---|---|
+| `progress_records` 唯一约束 | **生效** —— 重复 `(child_id,item_id)` 被拒（这是修并发重复上报的关键） |
+| `milestones` 唯一约束 | **生效** —— 重复 `first_complete` 徽章被拒 |
+| CHECK 约束 | **生效** —— 非法 `status` 被拒 |
+| 外键约束 | **生效** —— 孤儿记录被拒 |
+| `created_at` 类型 | `timestamp with time zone`（符合 UTC 约定） |
+| email 大小写不敏感唯一索引 | **存在** |
+| `ON DELETE CASCADE` | **生效** —— 删用户后子记录自动清理 |
+
+复现命令：
 
 ```bash
-createdb dodokid_test
-psql -d dodokid_test -f migrations/0001_init.sql
-psql -d dodokid_test -f migrations/0002_seed.sql
-psql -d dodokid_test -f migrations/0003_indexes.sql
+"C:/Users/Hey/.workbuddy/binaries/python/envs/default/Scripts/python.exe" scripts/verify_ddl.py
 ```
+
+#### 实测中发现的一个坑（写脚本时踩的）
+
+用 psycopg3 执行整文件时**必须 `autocommit=True`**。若在事务里执行，`with` 块退出时会连同 `CREATE TABLE` 一起回滚 —— 表现是「SQL 执行成功，但库里一张表都没有」。Go 侧若用 `pgx` 跑迁移，注意同样的事务边界问题。
 
 ### 两处已知不完整
 
