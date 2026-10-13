@@ -49,9 +49,11 @@ paths:
   # ------------------------------------------------------------------ Parent (C-end)
   /parent/sendSmsCode:
     post:
-      summary: Send an SMS verification code
+      summary: Send an SMS verification code (Node-only; DEPRECATED in Go — replaced by email)
+      deprecated: true
       operationId: sendSmsCode
       tags: [Parent]
+      security: []
       requestBody:
         required: true
         content:
@@ -76,9 +78,11 @@ paths:
           $ref: '#/components/responses/Error'
   /parent/verifyCode:
     post:
-      summary: Verify an SMS code (standalone check)
+      summary: Verify an SMS code (Node-only; DEPRECATED in Go — replaced by email)
+      deprecated: true
       operationId: verifyCode
       tags: [Parent]
+      security: []
       requestBody:
         required: true
         content:
@@ -103,6 +107,7 @@ paths:
       summary: Register a parent with phone + SMS code
       operationId: register
       tags: [Parent]
+      security: []
       requestBody:
         required: true
         content:
@@ -135,6 +140,7 @@ paths:
       summary: Login a parent with phone + SMS code
       operationId: login
       tags: [Parent]
+      security: []
       requestBody:
         required: true
         content:
@@ -161,6 +167,41 @@ paths:
                           user: { $ref: '#/components/schemas/PublicUser' }
                           tokens: { $ref: '#/components/schemas/AuthTokens' }
         '409':
+          $ref: '#/components/responses/Error'
+  /parent/auth/refresh:
+    post:
+      summary: Refresh parent access token
+      description: >
+        Exchange a valid refresh token for a new access/refresh pair.
+        The refresh token is single-use; reusing a consumed one is rejected
+        with code 40100. Audience is "app".
+      operationId: parentRefresh
+      tags: [ParentAuth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: Tokens refreshed
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          tokens: { $ref: '#/components/schemas/AuthTokens' }
+        '401':
           $ref: '#/components/responses/Error'
   /parent/logout:
     post:
@@ -852,6 +893,7 @@ paths:
       summary: Get the app/build version
       operationId: getVersion
       tags: [Meta]
+      security: []
       responses:
         '200':
           description: Version
@@ -868,6 +910,7 @@ paths:
       summary: Get the privacy policy reference
       operationId: getPrivacyPolicy
       tags: [Meta]
+      security: []
       responses:
         '200':
           description: Policy
@@ -921,6 +964,40 @@ paths:
         '401':
           $ref: '#/components/responses/Error'
         '403':
+          $ref: '#/components/responses/Error'
+  /admin/auth/refresh:
+    post:
+      summary: Refresh admin access token
+      description: >
+        Exchange a valid admin refresh token for a new access/refresh pair.
+        Audience is "admin".
+      operationId: adminRefresh
+      tags: [AdminAuth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: Tokens refreshed
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          tokens: { $ref: '#/components/schemas/AuthTokens' }
+        '401':
           $ref: '#/components/responses/Error'
   /admin/auth/logout:
     post:
