@@ -1,7 +1,7 @@
 # PRD：Go 后端重写方案（DodoKid）
 
-> 版本：v2.1　　日期：2026-10-13
-> 状态：可开工（数据库选型已定 **PostgreSQL**；契约基线已锁定，见第 10 章）
+> 版本：v2.2　　日期：2026-10-14
+> 状态：可开工（数据库选型 **PostgreSQL**；契约基线已锁定且缺陷已修；建表 DDL 已实测；详见第 10/11 章）
 > 背景：现有 Node + Express + MongoDB 后端在宝塔面板部署时暴露过多环境耦合（dotenv 缺失、全网卡监听、PM2 环境变量），改用 Go 重写为「单二进制 + PostgreSQL」，保留关系模型与通用运维工具。
 > **前端（儿童 App + 运营后台）完全复用，不做任何改动。**
 
@@ -688,11 +688,13 @@ MEDIA_CDN_BASE_URL=https://dodokid.heymf.cn/media
 
 ## 10. 契约基线（QA 产出，开发时以此逐条对照）
 
-### 10.1 必须先修的 3 项契约缺陷
+### 10.1 契约缺陷（初稿发现，均已修复，留作变更记录）
 
-**这 3 项在动工前处理**，否则会把问题一起搬进 Go 版。
+> 以下 3 项在初稿评审时发现，已在 `openapi.yaml` 中修复（修复方式与验证见本节目注）。保留此节以说明「Go 版契约相对 Node 版的 delta」。
 
-#### 缺陷 1（阻断级）：6 个公开端点缺 operation 级 security
+#### 缺陷 1（阻断级，已修复）：6 个公开端点缺 operation 级 security
+
+> **状态**：已在 `openapi.yaml` 为这 6 个操作补 `security: []`，YAML 解析校验后「0 个公开端点缺 security」。
 
 `openapi.yaml:46` 有全局 `security: [{bearerAuth: []}]`，而以下 6 个公开端点**未声明** operation 级 `security: []`：
 
@@ -709,9 +711,11 @@ MEDIA_CDN_BASE_URL=https://dodokid.heymf.cn/media
 
 **后果**：任何 OpenAPI 代码生成器都会给「登录接口」生成"必须先带 token"的客户端。Go 版若用 `oapi-codegen` 生成客户端，**会直接引入 P0 缺陷**。
 
-**修法**：为这 6 个操作补 `security: []`。
+**修法**：为这 6 个操作补 `security: []`。**已完成**。
 
-#### 缺陷 2（阻断级）：refreshToken 签发了但无兑换端点
+#### 缺陷 2（阻断级，已修复）：refreshToken 签发了但无兑换端点
+
+> **状态**：已在 `openapi.yaml` 新增 `POST /parent/auth/refresh` 与 `POST /admin/auth/refresh`（双 audience，请求体 `{refreshToken}`，响应 `{tokens: AuthTokens}`）。
 
 - `services/auth.service.js:23-26` **确实签发**了 `refreshToken`（TTL 7 天）
 - 但 69 个方法中**无任何 refresh 路径**（`grep refresh routes.js` 零命中）
@@ -741,7 +745,20 @@ POST /admin/auth/refresh    # body: { refreshToken }
 
 前端不依赖这两个，但**部署验收探针与媒体分发依赖它们**。建议明确标注为「部署面，非契约面」，或补进 openapi。
 
-### 10.2 端点完整清单（69 个方法，来自 openapi.yaml 解析）
+#### 契约变更 delta（openapi.yaml 相对 Node 版）
+
+| 变更 | 内容 | 影响端点数 |
+|---|---|---|
+| 6 个公开端点补 `security: []` | 修复缺陷 1 | 0（不改变计数） |
+| 新增 `POST /parent/auth/refresh` | 修复缺陷 2 | +1 |
+| 新增 `POST /admin/auth/refresh` | 修复缺陷 2 | +1 |
+| `sendSmsCode` / `verifyCode` 标 `deprecated: true` | Go 版改邮箱认证，这两端点不再实现 | -2（逻辑废弃） |
+
+**净结果**：openapi 端点 69 → **71**；其中 2 个 deprecated（短信），Go 版实际实现 = 71 - 2 = **69**，与 Node 版 69 对齐 —— 只是把 2 个短信端点换成 2 个 refresh 端点。
+
+> QA 当初用脚本验证的「69/69 精确匹配」是**修复前**的 Node 版契约。修复后 openapi 为 71，与 Node 版差 2 个新增 refresh 端点 + 2 个 deprecated 标记，这是预期的、有意的 delta。
+
+### 10.2 端点完整清单（OpenAPI 现状 71 个方法；Go 版目标实现 69 个）
 
 认证分类：**公开 7 / 家长 22 / 家长+gateToken 2 / 后台 38**
 
@@ -781,6 +798,8 @@ POST /admin/auth/refresh    # body: { refreshToken }
 | 23 | POST | `/parent/gate/setup` | 设置家长门 |
 | 24 | POST | `/parent/gate/verify` | 校验家长门，签发 gateToken |
 | 25 | POST | `/parent/logout` | 吊销当前令牌 jti |
+| 25a | POST | `/parent/auth/refresh` | **（Go 版新增）** 用 refreshToken 续期，返回新 tokens，旧 refreshToken 立即失效（一次性） |
+| 25b | POST | `/admin/auth/refresh` | **（Go 版新增）** 运营端 refreshToken 续期 |
 | 26 | PUT | `/preferences` | 更新偏好（语言/主题） |
 | 27 | GET | `/progress/{childId}` | 进度汇总（含完成率） |
 | 28 | PUT | `/progress/{childId}` | 上报进度（**幂等 upsert**） |
@@ -855,17 +874,17 @@ POST /admin/auth/refresh    # body: { refreshToken }
 
 ### 10.4 验收标准（EARS 格式，QA 产出）
 
-> **注意**：以下标准按**当前实现**写（手机号+短信码）。Go 版把认证改成邮箱+密码时，A 组需同步调整 —— 但**安全语义不变**。
+> **注意**：A 组已按 **Go 版目标（邮箱 + 密码）** 改写，是开发验收的直接依据。B–F 组与认证机制无关，保持不变。安全语义（防枚举、未验证禁止登录、双 audience 隔离、令牌吊销、refresh 一次性）与初稿一致。
 
-#### A. 认证
+#### A. 认证（Go 版目标：邮箱 + 密码）
 
 | 编号 | EARS 标准 |
 |---|---|
-| A1 | While 家长提交合法凭据申请注册，系统必须 创建 `role=parent` 账号并返回 `{user, tokens}`，且用户对象中联系方式必须脱敏 |
-| A2 | If 该标识已注册，系统必须 返回 `code=40900`，且不得返回任何令牌 |
-| A3 | While 家长提交合法凭据申请登录，系统必须 返回 `{user, tokens}`，accessToken 含 `aud=app`、TTL 900 秒 |
-| A4 | If 凭据不存在、已过期或已消费，系统必须 返回 `code=40000`，且不得透露三种情形的差异 |
-| A5 | While 家长凭据未验证成功，系统必须 拒绝其获取业务令牌（**Go 版：邮箱未验证禁止登录**） |
+| A1 | While 家长提交**未注册**邮箱与符合强度要求的密码申请注册，系统必须 创建 `role=parent` 账号（`email_verified=false`）、生成验证令牌、发送验证邮件，并返回 `{user}`（**不返回业务令牌**，须先验证邮箱），用户对象中邮箱必须脱敏（maskEmail） |
+| A2 | If 该邮箱已注册（无论是否已验证），系统必须 返回 `code=40900`，且不得返回任何令牌 |
+| A3 | While 家长提交**已验证**邮箱与正确密码申请登录，系统必须 返回 `{user, tokens}`，accessToken 含 `aud=app`、TTL 900 秒 |
+| A4 | If 邮箱不存在、密码错误、或邮箱未验证，系统必须 **统一返回 `code=40100`**，且不得透露「邮箱不存在 / 密码错误 / 未验证」三者的差异（同时防账号枚举与未验证登录） |
+| A5 | While 家长邮箱 `email_verified=false`，系统必须 拒绝其登录（code=40100），即使密码正确；验证邮件可通过重发端点再次获取 |
 | A6 | If 使用不存在的账号登录后台，系统必须 返回与「密码错误」**完全相同**的 `code` 与 `message`（防账号枚举） |
 | A7 | While 任一 accessToken 访问受保护端点，系统必须 先校验签名与 exp，再校验 jti 是否在吊销名单，最后放行 |
 | A8 | While 令牌 `type=refresh`，系统必须 拒绝其访问任何业务端点并返回 40100 |
@@ -873,7 +892,8 @@ POST /admin/auth/refresh    # body: { refreshToken }
 | A10 | While 家长令牌（`aud=app`）访问任一 `/admin/*`，系统必须 返回 40100 |
 | A11 | While 运营令牌（`aud=admin`）访问任一 C 端端点，系统必须 返回 40100 |
 | A12 | If 运营账号 `status=disabled`，系统必须 在下一次请求即返回 40100（**每次请求查库**，不靠令牌内快照） |
-| A13 | While 连续请求登录或发码超阈值，系统必须 返回 `code=42900` |
+| A13 | While 连续请求登录或发验证邮件超阈值，系统必须 返回 `code=42900` |
+| A14 | While 家长提交有效 `refreshToken` 申请续期，系统必须 返回新 `{tokens}`，且**旧 refreshToken 立即失效**（一次性）；若 refreshToken 不存在/过期/已被消费，系统必须 返回 40100 |
 
 #### B. 儿童档案
 
